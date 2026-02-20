@@ -166,9 +166,7 @@ NoEyes/
  ├── encryption.py      # Fernet + PBKDF2 helpers
  ├── utils.py           # Terminal utilities, timestamps, banner, helpers
  ├── config.py          # Configuration constants
- ├── README.md          # This file
- ├── FDD_REPORT.md      # Feature Driven Development report
- └── FDD_PRESENTATION.md# FDD presentation (slide‑style markdown)
+ └── README.md          # This file
 ```
 
 Running Over the Internet
@@ -182,13 +180,3 @@ To use NoEyes over the internet rather than a local network:
   the server machine.
 - Clients then connect to the server’s **public IP** (or DNS name) and the
   forwarded port.
-
-FDD Documentation
------------------
-
-For full Feature Driven Development artefacts (overall model, feature list,
-planning, design and build by feature), see:
-
-- `FDD_REPORT.md`
-- `FDD_PRESENTATION.md`
-
