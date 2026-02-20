@@ -151,7 +151,7 @@ Cross‑Platform Notes
 - Tested with standard Python on:
   - Linux
   - Windows
-  - macOS
+  - macOS (not sure)
 - Runs entirely in the terminal and uses only standard input/output for the UI.
 - Screen clearing uses `cls` on Windows and `clear` on Unix‑like systems.
 
