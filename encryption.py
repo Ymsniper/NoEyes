@@ -44,6 +44,25 @@ def build_fernet(passphrase: str) -> Fernet:
     return Fernet(key)
 
 
+def load_key_from_file(path: str) -> bytes:
+    """Load a Fernet key from file (raw base64 or one line)."""
+    with open(path, "rb") as f:
+        data = f.read().strip()
+    # Allow file to be base64 key only or "key=base64..."
+    if b"=" in data and not data.startswith(b"-----"):
+        for part in data.split():
+            if part.startswith(b"key="):
+                data = part[4:].strip()
+                break
+    return data
+
+
+def build_fernet_from_key_file(path: str) -> Fernet:
+    """Build Fernet from a key file (URL-safe base64 Fernet key)."""
+    key = load_key_from_file(path)
+    return Fernet(key)
+
+
 def encrypt_message(fernet: Fernet, plaintext: str) -> bytes:
     """
     Encrypt a UTF-8 string and return the token bytes.

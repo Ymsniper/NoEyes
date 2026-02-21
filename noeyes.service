@@ -1,0 +1,26 @@
+# systemd unit for NoEyes server (daemon)
+# Install:
+#   sudo cp noeyes.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable noeyes
+#   sudo systemctl start noeyes
+#
+# Set passphrase: create /etc/noeyes/passphrase or use Environment= in override.
+
+[Unit]
+Description=NoEyes Secure Terminal Chat Server
+After=network.target
+
+[Service]
+Type=simple
+User=noeyes
+Group=noeyes
+WorkingDirectory=/opt/noeyes
+ExecStart=/usr/bin/python3 noeyes.py --server --port 5000
+Restart=on-failure
+RestartSec=5
+# Optional: passphrase via file
+# EnvironmentFile=-/etc/noeyes/noeyes.env
+
+[Install]
+WantedBy=multi-user.target

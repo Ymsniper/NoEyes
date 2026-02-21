@@ -1,0 +1,14 @@
+{
+  "server": {
+    "port": 5000,
+    "host": "0.0.0.0"
+  },
+  "rate_limit_per_minute": 60,
+  "heartbeat_interval": 30,
+  "history_size": 50,
+  "colors_enabled": true,
+  "default_room": "general",
+  "key_file": "",
+  "reconnect_max_attempts": 0,
+  "file_max_size_mb": 50
+}

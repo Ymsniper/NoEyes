@@ -9,20 +9,27 @@ passphrase.
 Features
 --------
 
-- **Terminal interface**: usernames, timestamps, clean text layout.
-- **Server mode**: listen for connections, accept multiple clients, show joins/leaves.
-- **Client mode**: connect to server, send/receive messages, handle disconnects.
-- **Long‑distance chat**: TCP sockets over IP + port, works across the internet
-  (with proper routing / firewall rules).
-- **Encryption**: all chat messages are encrypted with Fernet using a shared
-  passphrase.
+- **Terminal interface**: usernames, timestamps, colored output, clean layout.
+- **Server mode**: listen for connections, accept multiple clients, rooms, rate limiting, heartbeat, message history.
+- **Client mode**: connect, send/receive messages, auto-reconnect, handle disconnects.
+- **Long‑distance chat**: TCP (or TLS) over IP + port, works across the internet.
+- **Encryption**: all messages encrypted with Fernet (shared passphrase or key file).
+- **Key file**: use `--key-file PATH` instead of typing passphrase.
+- **Config file**: JSON config for port, key path, rate limit, colors, etc. (see `noeyes_config.json.example`).
 - **Commands**:
   - `/help` – show help
-  - `/quit` – quit the chat
-  - `/clear` – clear the terminal
-  - `/users` – show currently known users
-- **Reliability**: connection‑loss handling, error messages for invalid input
-  and wrong keys, graceful shutdown.
+  - `/quit` – quit
+  - `/clear` – clear screen
+  - `/users` – list users
+  - `/nick <name>` – change username
+  - `/join <room>` – join room (default: general)
+  - `/msg <user> <text>` – private message
+  - `/send <user> <filepath>` – send file (encrypted)
+- **Reliability**: reconnect with backoff, heartbeat, rate limiting, invalid input handling.
+- **Optional TLS**: `--tls --cert PATH --tls-key PATH` on server; `--tls` on client.
+- **Daemon**: `--daemon` to run server in background.
+- **Docker**: `Dockerfile` and `docker-compose.yml` for running the server.
+- **systemd**: `noeyes.service` for running as a service.
 
 Requirements
 ------------
@@ -77,17 +84,16 @@ Command‑line Options
 --------------------
 
 ```bash
-python noeyes.py --server [--port PORT] [--key PASSPHRASE]
-python noeyes.py --connect IP_ADDRESS [--port PORT] [--key PASSPHRASE]
+python noeyes.py --server [--port PORT] [--key PASSPHRASE] [--key-file PATH] [--config PATH] [--daemon] [--tls --cert PATH --tls-key PATH]
+python noeyes.py --connect IP_ADDRESS [--port PORT] [--key PASSPHRASE] [--key-file PATH] [--config PATH] [--tls]
 ```
 
-- **`--server`**: run in server mode.
-- **`--connect IP_ADDRESS`**: run in client mode and connect to a server.
-- **`--port`**: TCP port (default: `5000`).
-- **`--key PASSPHRASE`**: shared passphrase used to derive the encryption key.
-  - If omitted:
-    - Server mode: you are prompted once.
-    - Client mode: you are prompted with confirmation.
+- **`--server`** / **`--connect IP`**: server or client mode.
+- **`--port`**: TCP port (default from config or `5000`).
+- **`--key PASSPHRASE`** / **`--key-file PATH`**: shared passphrase or path to Fernet key file.
+- **`--config PATH`**: JSON config file (port, key_file, rate_limit_per_minute, history_size, colors_enabled, etc.).
+- **`--daemon`**: run server in background (Unix).
+- **`--tls`** + **`--cert`** + **`--tls-key`**: TLS on server; **`--tls`** (and optional **`--cert`**) on client.
 
 Terminal Interface
 ------------------
@@ -151,7 +157,7 @@ Cross‑Platform Notes
 - Tested with standard Python on:
   - Linux
   - Windows
-  - macOS (not sure)
+  - macOS
 - Runs entirely in the terminal and uses only standard input/output for the UI.
 - Screen clearing uses `cls` on Windows and `clear` on Unix‑like systems.
 
@@ -160,13 +166,19 @@ Project Structure
 
 ```text
 NoEyes/
- ├── noeyes.py          # Main entry point (argparse, server/client switch)
- ├── server.py          # ChatServer implementation (multi‑client TCP server)
- ├── client.py          # ChatClient implementation (interactive terminal client)
- ├── encryption.py      # Fernet + PBKDF2 helpers
- ├── utils.py           # Terminal utilities, timestamps, banner, helpers
- ├── config.py          # Configuration constants
- └── README.md          # This file
+ ├── noeyes.py              # Main entry point
+ ├── server.py              # Chat server (rooms, rate limit, heartbeat, history)
+ ├── client.py              # Chat client (reconnect, /msg, /nick, /join, /send)
+ ├── encryption.py          # Fernet + PBKDF2 + key file
+ ├── utils.py               # Terminal utils, colors, banner
+ ├── config.py              # Config + config file loading
+ ├── noeyes_config.json.example  # Example config
+ ├── Dockerfile             # Server container
+ ├── docker-compose.yml     # Compose example
+ ├── noeyes.service         # systemd unit
+ ├── README.md
+ ├── FDD_REPORT.md
+ └── FDD_PRESENTATION.md
 ```
 
 Running Over the Internet
@@ -180,3 +192,13 @@ To use NoEyes over the internet rather than a local network:
   the server machine.
 - Clients then connect to the server’s **public IP** (or DNS name) and the
   forwarded port.
+
+FDD Documentation
+-----------------
+
+For full Feature Driven Development artefacts (overall model, feature list,
+planning, design and build by feature), see:
+
+- `FDD_REPORT.md`
+- `FDD_PRESENTATION.md`
+
