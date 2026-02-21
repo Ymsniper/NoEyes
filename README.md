@@ -158,6 +158,7 @@ Cross‑Platform Notes
   - Linux
   - Windows
   - macOS
+  - Android (with termux and rust installation)
 - Runs entirely in the terminal and uses only standard input/output for the UI.
 - Screen clearing uses `cls` on Windows and `clear` on Unix‑like systems.
 
@@ -176,9 +177,7 @@ NoEyes/
  ├── Dockerfile             # Server container
  ├── docker-compose.yml     # Compose example
  ├── noeyes.service         # systemd unit
- ├── README.md
- ├── FDD_REPORT.md
- └── FDD_PRESENTATION.md
+ └── README.md
 ```
 
 Running Over the Internet
@@ -193,12 +192,5 @@ To use NoEyes over the internet rather than a local network:
 - Clients then connect to the server’s **public IP** (or DNS name) and the
   forwarded port.
 
-FDD Documentation
------------------
 
-For full Feature Driven Development artefacts (overall model, feature list,
-planning, design and build by feature), see:
-
-- `FDD_REPORT.md`
-- `FDD_PRESENTATION.md`
 
