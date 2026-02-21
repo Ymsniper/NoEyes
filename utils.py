@@ -67,11 +67,16 @@ def safe_print(message: str, colors_enabled: bool = True) -> None:
 def print_banner(colors_enabled: bool = True) -> None:
     """Print NoEyes banner."""
     c = colorize if colors_enabled else (lambda t, _=None: t)
-    banner = f"""
-  ╔═══════════════════════════╗
-  ║         {c('NoEyes', CYAN)}           ║
-  ║   Secure Terminal Chat   ║
-  ╚═══════════════════════════╝
+    banner = r"""
+    _   __      ______               
+   / | / /___  / ____/_  _____  _____
+  /  |/ / __ \/ __/ / / / / _ \/ ___/
+ / /|  / /_/ / /___/ /_/ /  __(__  ) 
+/_/ |_/\____/_____/\__, /\___/____/  
+                  /____/             
+
+Secure Terminal Chat - NoEyes
+
 """
     safe_print(banner)
 
