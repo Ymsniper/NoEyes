@@ -1,150 +1,141 @@
+# FILE: noeyes.py
 """
-NoEyes - Secure Terminal Chat
+noeyes.py — NoEyes entry point.
 
-Main entry point providing both server and client modes.
+Usage:
+    python noeyes.py --server [--port PORT] [--key PASS | --key-file PATH]
+    python noeyes.py --connect HOST [--port PORT] [--key PASS | --key-file PATH]
+    python noeyes.py --gen-key --key-file PATH
 """
 
-from __future__ import annotations
-
-import argparse
+import logging
 import os
 import sys
 from getpass import getpass
 
-from config import DEFAULT_PORT, load_config, get_config_value
+import config as cfg_mod
+import encryption as enc
+import utils
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 
-def _read_passphrase(prompt: str) -> str:
-    """Read passphrase; use input() if no TTY (e.g. Termux, IDE)."""
-    if sys.stdin.isatty():
-        try:
-            return getpass(prompt)
-        except (EOFError, KeyboardInterrupt):
-            raise
-        except Exception:
-            pass
-    print("(Passphrase will be visible.)", file=sys.stderr)
-    return input(prompt).strip()
-from encryption import build_fernet, build_fernet_from_key_file
-from server import run_server
-from client import run_client, prompt_for_passphrase
+def _resolve_fernet(cfg: dict):
+    """
+    Derive or load a group Fernet key.
 
+    Priority: --key-file > --key > interactive passphrase prompt.
+    """
+    if cfg.get("key_file"):
+        return enc.load_key_file(cfg["key_file"])
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="NoEyes - Secure Terminal Chat (server and client)."
-    )
-
-    mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument(
-        "--server",
-        action="store_true",
-        help="Run in server mode.",
-    )
-    mode_group.add_argument(
-        "--connect",
-        metavar="IP_ADDRESS",
-        help="Run in client mode and connect to this server IP/hostname.",
-    )
-
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help=f"TCP port (default from config or {DEFAULT_PORT}).",
-    )
-    parser.add_argument(
-        "--key",
-        metavar="PASSPHRASE",
-        help="Shared passphrase for encryption. If omitted, use --key-file or prompt.",
-    )
-    parser.add_argument(
-        "--key-file",
-        metavar="PATH",
-        help="Path to file containing Fernet key (base64). Overrides --key.",
-    )
-    parser.add_argument(
-        "--config",
-        metavar="PATH",
-        help="Path to JSON config file.",
-    )
-    parser.add_argument(
-        "--daemon",
-        action="store_true",
-        help="Run server in background (server mode only).",
-    )
-    parser.add_argument(
-        "--tls",
-        action="store_true",
-        help="Use TLS (requires --cert and --tls-key on server).",
-    )
-    parser.add_argument(
-        "--cert",
-        metavar="PATH",
-        help="Path to TLS certificate (PEM).",
-    )
-    parser.add_argument(
-        "--tls-key",
-        metavar="PATH",
-        help="Path to TLS private key (PEM). Server only.",
-    )
-
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-
-    config = load_config(args.config)
-    port = args.port or get_config_value(config, "server.port", DEFAULT_PORT)
-
-    # Resolve key: --key-file > --key > config key_file > prompt
-    fernet = None
-    if args.key_file:
-        try:
-            fernet = build_fernet_from_key_file(args.key_file)
-        except OSError as e:
-            print(f"Cannot read key file: {e}", file=sys.stderr)
+    passphrase = cfg.get("key")
+    if not passphrase:
+        if sys.stdin.isatty():
+            passphrase = getpass("Shared passphrase: ")
+            confirm    = getpass("Confirm passphrase: ")
+            if passphrase != confirm:
+                print(utils.cerr("[error] Passphrases do not match."))
+                sys.exit(1)
+        else:
+            print(utils.cerr("[error] No key or key-file provided."))
             sys.exit(1)
-    elif args.key:
-        fernet = build_fernet(args.key)
-    else:
-        key_file_conf = get_config_value(config, "key_file", "") or ""
-        if key_file_conf and os.path.isfile(key_file_conf):
-            try:
-                fernet = build_fernet_from_key_file(key_file_conf)
-            except OSError:
-                pass
-        if fernet is None:
-            if args.server:
-                passphrase = _read_passphrase("Enter shared passphrase for this session: ")
-                if not passphrase:
-                    print("Passphrase cannot be empty.")
-                    sys.exit(1)
-                fernet = build_fernet(passphrase)
-            else:
-                passphrase = prompt_for_passphrase(None)
-                fernet = build_fernet(passphrase)
 
-    if args.tls:
-        config["tls"] = True
-        config["tls_cert"] = args.cert or ""
-        config["tls_key"] = getattr(args, "tls_key", None) or ""
+    return enc.derive_fernet_key(passphrase)
 
-    if args.server:
-        run_server(
-            port=port,
-            fernet=fernet,
-            config=config,
-            daemon=args.daemon,
-        )
-    else:
-        run_client(
-            host=args.connect,
-            port=port,
-            fernet=fernet,
-            config=config,
-        )
+
+def _get_username(cfg: dict) -> str:
+    uname = cfg.get("username")
+    if uname:
+        return uname.strip()[:32]
+    if sys.stdin.isatty():
+        uname = input("Username: ").strip()[:32]
+    if not uname:
+        import random, string
+        uname = "user_" + "".join(random.choices(string.ascii_lowercase, k=5))
+    return uname
+
+
+def run_server(cfg: dict) -> None:
+    from server import NoEyesServer
+
+    server = NoEyesServer(
+        host="0.0.0.0",
+        port=cfg["port"],
+        history_size=cfg["history_size"],
+        rate_limit_per_minute=cfg["rate_limit_per_minute"],
+    )
+
+    if cfg.get("daemon"):
+        _daemonize()
+
+    server.run()
+
+
+def run_client(cfg: dict) -> None:
+    from client import NoEyesClient
+
+    group_fernet = _resolve_fernet(cfg)
+    username     = _get_username(cfg)
+
+    client = NoEyesClient(
+        host=cfg["connect"],
+        port=cfg["port"],
+        username=username,
+        group_fernet=group_fernet,
+        room=cfg["room"],
+        identity_path=cfg["identity_path"],
+        tofu_path=cfg["tofu_path"],
+    )
+    client.run()
+
+
+def run_gen_key(cfg: dict) -> None:
+    path = cfg.get("key_file")
+    if not path:
+        print(utils.cerr("[error] --gen-key requires --key-file PATH"))
+        sys.exit(1)
+    enc.generate_key_file(path)
+
+
+def _daemonize() -> None:
+    """Double-fork to create a background daemon (Unix only)."""
+    if os.name != "posix":
+        print(utils.cwarn("[warn] --daemon is not supported on Windows; ignoring."))
+        return
+    pid = os.fork()
+    if pid > 0:
+        sys.exit(0)
+    os.setsid()
+    pid = os.fork()
+    if pid > 0:
+        sys.exit(0)
+    sys.stdin  = open(os.devnull)
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
+
+
+def main(argv=None) -> None:
+    cfg = cfg_mod.load_config(argv)
+
+    if cfg["gen_key"]:
+        run_gen_key(cfg)
+        return
+
+    if cfg["server"]:
+        run_server(cfg)
+        return
+
+    if cfg["connect"]:
+        run_client(cfg)
+        return
+
+    # No mode selected
+    cfg_mod.build_arg_parser().print_help()
+    sys.exit(1)
 
 
 if __name__ == "__main__":

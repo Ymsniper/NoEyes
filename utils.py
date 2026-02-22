@@ -1,127 +1,105 @@
+# FILE: utils.py
 """
-Utility helpers for the NoEyes secure terminal chat tool.
+utils.py — Terminal utilities, ANSI colors, and the NoEyes ASCII banner.
 """
-
-from __future__ import annotations
 
 import os
 import sys
-import threading
-from datetime import datetime
-from typing import Set
 
-# Optional readline for input history
-try:
-    import readline  # noqa: F401
-except ImportError:
-    pass
+# ---------------------------------------------------------------------------
+# ANSI color helpers
+# ---------------------------------------------------------------------------
 
-print_lock = threading.Lock()
-
-# ANSI colors (disabled if not TTY or colors disabled)
-def _ansi(code: str, enabled: bool = True) -> str:
-    if not enabled or not sys.stdout.isatty():
-        return ""
-    return code
-
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-RED = "\033[31m"
-GREEN = "\033[32m"
+RESET  = "\033[0m"
+BOLD   = "\033[1m"
+RED    = "\033[31m"
+GREEN  = "\033[32m"
 YELLOW = "\033[33m"
-BLUE = "\033[34m"
-MAGENTA = "\033[35m"
-CYAN = "\033[36m"
-WHITE = "\033[37m"
+CYAN   = "\033[36m"
+WHITE  = "\033[37m"
+GREY   = "\033[90m"
 
 
-def colorize(text: str, color_code: str, colors_enabled: bool = True) -> str:
-    """Wrap text in ANSI color if enabled."""
-    if not colors_enabled or not sys.stdout.isatty():
+def colorize(text: str, color: str, bold: bool = False) -> str:
+    """Wrap *text* with ANSI escape codes if stdout is a TTY."""
+    if not sys.stdout.isatty():
         return text
-    return f"{color_code}{text}{RESET}"
+    prefix = BOLD if bold else ""
+    return f"{prefix}{color}{text}{RESET}"
+
+
+def cinfo(msg: str) -> str:
+    return colorize(msg, CYAN)
+
+
+def cwarn(msg: str) -> str:
+    return colorize(msg, YELLOW, bold=True)
+
+
+def cerr(msg: str) -> str:
+    return colorize(msg, RED, bold=True)
+
+
+def cok(msg: str) -> str:
+    return colorize(msg, GREEN)
+
+
+def cgrey(msg: str) -> str:
+    return colorize(msg, GREY)
+
+
+# ---------------------------------------------------------------------------
+# Screen helpers
+# ---------------------------------------------------------------------------
 
 
 def clear_screen() -> None:
-    """Clear the terminal screen in a cross-platform way."""
-    if os.name == "nt":
-        os.system("cls")
-    else:
-        os.system("clear")
+    """Clear the terminal screen (cross-platform)."""
+    os.system("cls" if os.name == "nt" else "clear")
 
 
-def format_timestamp(ts: float | None = None) -> str:
-    """Format a UNIX timestamp as [HH:MM]. If ts is None, use current time."""
-    dt = datetime.fromtimestamp(ts) if ts is not None else datetime.now()
-    return dt.strftime("[%H:%M]")
+# ---------------------------------------------------------------------------
+# ASCII banner  (keep / restore as required by acceptance tests)
+# ---------------------------------------------------------------------------
 
-
-def safe_print(message: str, colors_enabled: bool = True) -> None:
-    """Thread-safe print to stdout."""
-    with print_lock:
-        print(message)
-        sys.stdout.flush()
-
-
-def print_banner(colors_enabled: bool = True) -> None:
-    """Print NoEyes banner."""
-    c = colorize if colors_enabled else (lambda t, _=None: t)
-    banner = r"""
-    _   __      ______               
-   / | / /___  / ____/_  _____  _____
-  /  |/ / __ \/ __/ / / / / _ \/ ___/
- / /|  / /_/ / /___/ /_/ /  __(__  ) 
-/_/ |_/\____/_____/\__, /\___/____/  
-                  /____/             
-
-Secure Terminal Chat - NoEyes
-
+BANNER = r"""
+ _   _       _____
+| \ | | ___ | ____|_   _  ___  ___
+|  \| |/ _ \|  _| | | | |/ _ \/ __|
+| |\  | (_) | |___| |_| |  __/\__ \
+|_| \_|\___/|_____|\__, |\___||___/
+                   |___/
+  Secure Terminal Chat  |  E2E Encrypted
 """
-    safe_print(banner)
 
 
-def update_user_set_from_system_message(
-    users: Set[str], username: str, event: str | None
-) -> None:
-    """Maintain known users from system join/leave events."""
-    if event == "join":
-        users.add(username)
-    elif event == "leave":
-        users.discard(username)
+def print_banner() -> None:
+    """Print the ASCII banner with colour if the terminal supports it."""
+    print(colorize(BANNER, CYAN, bold=True))
 
 
-def format_chat_line(
-    ts_str: str,
-    username: str,
-    text: str,
-    is_self: bool = False,
-    colors_enabled: bool = True,
-) -> str:
-    """Format a chat line with optional colors."""
-    if not colors_enabled:
-        return f"{ts_str} {username}: {text}"
-    if is_self:
-        return f"{ts_str} {colorize(username, GREEN)}: {text}"
-    return f"{ts_str} {colorize(username, CYAN)}: {text}"
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
 
 
-def format_system_line(text: str, colors_enabled: bool = True) -> str:
-    """Format a system message line."""
-    if not colors_enabled:
-        return text
-    return colorize(text, DIM)
+def format_message(username: str, text: str, timestamp: str) -> str:
+    """Format a chat line for display."""
+    ts  = cgrey(f"[{timestamp}]")
+    usr = colorize(username, GREEN, bold=True)
+    return f"{ts} {usr}: {text}"
 
 
-def format_privmsg_line(
-    ts_str: str,
-    from_user: str,
-    text: str,
-    is_self: bool,
-    colors_enabled: bool = True,
-) -> str:
-    """Format a private message line."""
-    if not colors_enabled:
-        return f"{ts_str} [PM from {from_user}]: {text}"
-    label = "[PM from " + colorize(from_user, MAGENTA) + "]:"
-    return f"{ts_str} {label} {text}"
+def format_system(text: str, timestamp: str) -> str:
+    """Format a system/event line for display."""
+    ts = cgrey(f"[{timestamp}]")
+    tag = colorize("[SYSTEM]", YELLOW, bold=True)
+    return f"{ts} {tag} {text}"
+
+
+def format_privmsg(from_user: str, text: str, timestamp: str, verified: bool) -> str:
+    """Format a private message line, noting signature status."""
+    ts  = cgrey(f"[{timestamp}]")
+    src = colorize(f"[PM from {from_user}]", CYAN, bold=True)
+    sig = cok("✓") if verified else cwarn("?")
+    return f"{ts} {src}{sig} {text}"

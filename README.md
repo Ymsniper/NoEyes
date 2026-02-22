@@ -1,196 +1,270 @@
-NoEyes – Secure Terminal Chat
-================================
+# FILE: README.md
+# NoEyes – Secure Terminal Chat
 
 NoEyes is a terminal‑based secure chat tool that allows two or more users to
 communicate over long distances using the internet. It is implemented in
 Python and secured with Fernet (symmetric encryption) using a shared
-passphrase.
+passphrase or key file.
 
-Features
---------
+> **Privacy guarantee (v2.0+):** The server no longer sees plaintext message
+> bodies.  All chat payloads are encrypted client-side before transmission.
+> The server is a *blind forwarder* — it reads only the routing header and
+> forwards the encrypted bytes verbatim.  For group chat, use a shared
+> `--key-file`; for private `/msg` messages, NoEyes automatically performs an
+> X25519 Diffie-Hellman handshake to derive a pairwise key that the server
+> never touches.
+
+---
+
+## Features
 
 - **Terminal interface**: usernames, timestamps, colored output, clean layout.
-- **Server mode**: listen for connections, accept multiple clients, rooms, rate limiting, heartbeat, message history.
-- **Client mode**: connect, send/receive messages, auto-reconnect, handle disconnects.
-- **Long‑distance chat**: TCP (or TLS) over IP + port, works across the internet.
-- **Encryption**: all messages encrypted with Fernet (shared passphrase or key file).
-- **Key file**: use `--key-file PATH` instead of typing passphrase.
-- **Config file**: JSON config for port, key path, rate limit, colors, etc. (see `noeyes_config.json.example`).
-- **Commands**:
-  - `/help` – show help
-  - `/quit` – quit
-  - `/clear` – clear screen
-  - `/users` – list users
-  - `/nick <name>` – change username
-  - `/join <room>` – join room (default: general)
-  - `/msg <user> <text>` – private message
-  - `/send <user> <filepath>` – send file (encrypted)
-- **Reliability**: reconnect with backoff, heartbeat, rate limiting, invalid input handling.
-- **Optional TLS**: `--tls --cert PATH --tls-key PATH` on server; `--tls` on client.
-- **Daemon**: `--daemon` to run server in background.
-- **Docker**: `Dockerfile` and `docker-compose.yml` for running the server.
-- **systemd**: `noeyes.service` for running as a service.
+- **Server mode**: listen for connections, accept multiple clients, rooms,
+  rate limiting, heartbeat, message history.
+- **Client mode**: connect, send/receive messages, auto-reconnect, handle
+  disconnects.
+- **Long‑distance chat**: TCP over IP + port, works across the internet.
+- **Group encryption**: all chat messages encrypted with Fernet (shared
+  passphrase or key file).  The server **never** decrypts payloads.
+- **Private messages (`/msg`)**: automatic X25519 DH key exchange on first
+  contact; pairwise Fernet encryption + Ed25519 signing.
+- **Ed25519 identity**: auto-generated on first run at
+  `~/.noeyes/identity.key`.  Private messages are signed; recipients verify
+  against their TOFU store.
+- **TOFU pubkey store** (`~/.noeyes/tofu_pubkeys.json`): first-seen keys are
+  trusted; subsequent mismatches show a loud security warning.
+- **Key file**: use `--key-file PATH` instead of typing a passphrase.
+- **Config file**: JSON config for port, key path, rate limit, colors, etc.
+- **Commands**: `/help`, `/quit`, `/clear`, `/users`, `/nick`, `/join`,
+  `/msg`, `/send`.
+- **Optional TLS**: `--tls --cert PATH --tls-key PATH` on server; `--tls` on
+  client.
+- **Daemon**: `--daemon` to run server in background (Unix).
+- **Docker** / **systemd**: `Dockerfile`, `docker-compose.yml`,
+  `noeyes.service`.
 
-Requirements
-------------
+---
 
-- Python 3.8+
+## Requirements
+
+- Python 3.11+
 - `pip install cryptography`
 
-Installation
-------------
+## Installation
 
 ```bash
 cd NoEyes
 pip install cryptography
 ```
 
-Basic Usage
------------
+---
 
-All commands are run from inside the `NoEyes` directory.
+## Quick Start
 
-### Start a server
+### 1. Generate a shared key file (recommended)
+
+```bash
+python noeyes.py --gen-key --key-file /path/to/shared.key
+```
+
+Distribute `shared.key` to all participants via a secure channel (USB, Signal,
+etc.).  **Never send it through NoEyes itself.**
+
+### 2. Start the server
 
 ```bash
 python noeyes.py --server --port 5000
 ```
 
-You will be prompted for a **shared passphrase**. All clients must use the same
-passphrase (either via `--key` or interactive prompt) to join the session.
+The server does not need the key file — it never decrypts messages.
 
-### Start a client
-
-On another machine or terminal:
+### 3. Start clients
 
 ```bash
-python noeyes.py --connect IP_ADDRESS --port 5000
+# On machine A
+python noeyes.py --connect SERVER_IP --port 5000 --key-file /path/to/shared.key
+
+# On machine B
+python noeyes.py --connect SERVER_IP --port 5000 --key-file /path/to/shared.key
 ```
 
-Example:
+On first run, each client generates an Ed25519 identity at
+`~/.noeyes/identity.key`.
+
+---
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/quit` | Disconnect and exit |
+| `/clear` | Clear terminal and redraw banner |
+| `/users` | List users in the current room |
+| `/nick <n>` | Change username |
+| `/join <room>` | Switch to another room |
+| `/msg <user> <text>` | Send an E2E-encrypted private message (auto-DH) |
+| `/send <user> <file>` | Send a file (encrypted, requires established DH) |
+
+---
+
+## Key Management
+
+### Group key (shared Fernet key file)
 
 ```bash
-python noeyes.py --connect 192.168.1.5 --port 5000
+# Generate
+python noeyes.py --gen-key --key-file ./chat.key
+
+# Use
+python noeyes.py --connect HOST --key-file ./chat.key
 ```
 
-You will be asked:
+### Identity keys (Ed25519)
 
-1. For a username.
-2. For the shared passphrase (twice for confirmation, unless you passed `--key`).
-
-If the passphrase matches the server’s, you will join the encrypted chat.
-
-Command‑line Options
---------------------
+Identity keys are auto-generated at `~/.noeyes/identity.key`.  You can back
+them up and restore them:
 
 ```bash
-python noeyes.py --server [--port PORT] [--key PASSPHRASE] [--key-file PATH] [--config PATH] [--daemon] [--tls --cert PATH --tls-key PATH]
-python noeyes.py --connect IP_ADDRESS [--port PORT] [--key PASSPHRASE] [--key-file PATH] [--config PATH] [--tls]
+cp ~/.noeyes/identity.key /backup/identity.key   # export
+cp /backup/identity.key ~/.noeyes/identity.key   # import
 ```
 
-- **`--server`** / **`--connect IP`**: server or client mode.
-- **`--port`**: TCP port (default from config or `5000`).
-- **`--key PASSPHRASE`** / **`--key-file PATH`**: shared passphrase or path to Fernet key file.
-- **`--config PATH`**: JSON config file (port, key_file, rate_limit_per_minute, history_size, colors_enabled, etc.).
-- **`--daemon`**: run server in background (Unix).
-- **`--tls`** + **`--cert`** + **`--tls-key`**: TLS on server; **`--tls`** (and optional **`--cert`**) on client.
+### TOFU pubkey store
 
-Terminal Interface
-------------------
+```bash
+# View
+python -c "import identity; identity.export_tofu()"
 
-Example message format:
-
-```text
-[12:30] user1: Hello
+# Import from a file shared out-of-band
+python -c "import identity; identity.import_tofu('peer_keys.json')"
 ```
 
-- Timestamps are local to each participant.
-- Join/leave events are shown as system messages:
+TOFU store location: `~/.noeyes/tofu_pubkeys.json`
 
-```text
-[12:31] [SYSTEM] user2 has joined the chat.
+---
+
+## Encryption Details
+
+### Group chat
+
+1. Message body serialized as JSON (`{text, username, ts}`).
+2. Encrypted with `Fernet(group_key)`.
+3. Sent as the payload of a framed frame — the server forwards it blind.
+
+### Private `/msg`
+
+1. On first `/msg` to a new peer, an X25519 DH handshake is performed
+   automatically.  The DH public keys travel inside group-Fernet-encrypted
+   payloads, so the server cannot inspect them.
+2. Both sides derive a shared Fernet key: `SHA-256(X25519_shared_secret)`.
+3. Message body: `{text, username, ts, sig}` where `sig` is an Ed25519
+   signature over the plaintext.
+4. Body encrypted with the pairwise Fernet.
+5. Recipient verifies the signature against their TOFU store before display.
+
+### Wire protocol (framing)
+
+```
+[4 bytes: header_len big-endian uint32]
+[4 bytes: payload_len big-endian uint32]
+[header_len bytes: UTF-8 JSON — plaintext routing metadata]
+[payload_len bytes: encrypted payload — opaque to server]
 ```
 
-Commands
---------
+---
 
-- **`/help`**: show available commands.
-- **`/quit`**: disconnect and exit.
-- **`/clear`**: clear the terminal screen and redraw the banner.
-- **`/users`**: show known connected users (based on join/leave events observed
-  since you connected).
+## Running the Acceptance Tests
 
-Encryption Details
-------------------
+```bash
+python selftest.py
+```
 
-- Messages are encrypted using **Fernet** from the `cryptography` package.
-- A shared passphrase is converted into a Fernet key using **PBKDF2‑HMAC**
-  (SHA‑256, fixed academic salt, high iteration count).
-- Every chat message is:
-  1. Serialized as JSON, including:
-     - `type` (`chat` or `system`)
-     - `username`
-     - `text`
-     - `timestamp`
-     - `event` (for join/leave system messages)
-  2. Encrypted with Fernet.
-  3. Sent as a single newline‑terminated token over the TCP connection.
-- The server decrypts messages to display them and re‑broadcasts encrypted
-  tokens to other clients.
+Expected output:
 
-Error Handling & Reliability
-----------------------------
+```
+[selftest] Server started (PID …)
+[selftest] Bob started (PID …)
+[selftest] Alice started (PID …)
+[selftest] Sending group chat message…
+[PASS] Test 1 — Bob received group message.
+[PASS] Test 2 — Server stdout does NOT contain plaintext message body.
+[selftest] Sending /msg (should trigger DH handshake)…
+[PASS] Test 4 — Bob received private message.
+[PASS] Test 5 — Server stdout does NOT contain plaintext private message body.
 
-- **Wrong IP / server offline**:
-  - Client prints a clear error message and exits.
-- **Wrong passphrase / key mismatch**:
-  - Client prints: `Received undecryptable message. Possible wrong key.`
-- **Connection loss**:
-  - Client prints: `Disconnected from server.` and leaves the chat loop.
-  - Server logs disconnects and broadcasts a leave event.
-- **Invalid input / malformed data**:
-  - Server and client both validate JSON payloads and ignore malformed messages.
+[PASS] All 5 acceptance checks passed.
+```
 
-Cross‑Platform Notes
---------------------
+---
 
-- Tested with standard Python on:
-  - Linux
-  - Windows
-  - macOS
-  - Android (with termux and rust installation)
-- Runs entirely in the terminal and uses only standard input/output for the UI.
-- Screen clearing uses `cls` on Windows and `clear` on Unix‑like systems.
+## Manual Acceptance Test (step by step)
 
-Project Structure
------------------
+```bash
+# Terminal 1 — server (no key needed)
+python noeyes.py --server --port 5000
 
-```text
+# Terminal 2 — alice
+python noeyes.py --connect 127.0.0.1 --port 5000 \
+    --username alice --key-file ./chat.key
+
+# Terminal 3 — bob
+python noeyes.py --connect 127.0.0.1 --port 5000 \
+    --username bob --key-file ./chat.key
+```
+
+In alice's terminal:
+```
+hello world          ← group message; visible on bob; server console shows no plaintext
+/msg bob secret_hi   ← triggers DH; after handshake bob sees "secret_hi"; server does not
+/users               ← server replies in header; no payload decryption
+```
+
+Server console should show **only** routing metadata (usernames, room, event
+type), never message text.
+
+---
+
+## Command‑line Reference
+
+```
+python noeyes.py --server  [--port PORT] [--config PATH] [--daemon]
+                           [--tls --cert PATH --tls-key PATH]
+
+python noeyes.py --connect HOST [--port PORT] [--username NAME]
+                               [--key PASSPHRASE | --key-file PATH]
+                               [--room ROOM] [--config PATH]
+                               [--tls]
+
+python noeyes.py --gen-key --key-file PATH
+```
+
+---
+
+## Project Structure
+
+```
 NoEyes/
  ├── noeyes.py              # Main entry point
- ├── server.py              # Chat server (rooms, rate limit, heartbeat, history)
- ├── client.py              # Chat client (reconnect, /msg, /nick, /join, /send)
- ├── encryption.py          # Fernet + PBKDF2 + key file
- ├── utils.py               # Terminal utils, colors, banner
- ├── config.py              # Config + config file loading
- ├── noeyes_config.json.example  # Example config
- ├── Dockerfile             # Server container
- ├── docker-compose.yml     # Compose example
- ├── noeyes.service         # systemd unit
+ ├── server.py              # Blind-forwarder server (zero decryption)
+ ├── client.py              # Chat client (E2E encryption, DH, TOFU)
+ ├── encryption.py          # Fernet + PBKDF2 + Ed25519 + X25519
+ ├── identity.py            # TOFU pubkey store
+ ├── utils.py               # Terminal utils, colors, ASCII banner
+ ├── config.py              # Config + CLI arg parsing
+ ├── selftest.py            # Automated acceptance tests
+ ├── CHANGELOG.md           # What changed
+ ├── noeyes_config.json.example
+ ├── Dockerfile
+ ├── docker-compose.yml
+ ├── noeyes.service
  └── README.md
 ```
 
-Running Over the Internet
--------------------------
+---
 
-To use NoEyes over the internet rather than a local network:
+## About
 
-- Ensure the server machine’s firewall allows incoming TCP on the chosen port
-  (default `5000`).
-- If behind a home router, configure **port forwarding** from the public IP to
-  the server machine.
-- Clients then connect to the server’s **public IP** (or DNS name) and the
-  forwarded port.
-
-
-
+NoEyes is a secure terminal chat tool.  In v2.0 the server became a true blind
+forwarder: it never calls any decryption function and cannot read message
+bodies, even if compromised.
