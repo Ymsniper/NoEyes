@@ -38,7 +38,7 @@ import utils
 # File receive directory and type classification
 # ---------------------------------------------------------------------------
 
-RECEIVE_BASE = Path("~/NoEyes_files").expanduser()
+RECEIVE_BASE = Path(__file__).parent / "files"
 
 _TYPE_MAP = {
     "images": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg",
@@ -65,7 +65,7 @@ def _file_type_folder(filename: str) -> str:
 
 
 def _unique_dest(filename: str) -> Path:
-    """Return a unique Path in the right ~/NoEyes_files sub-folder."""
+    """Return a unique Path in the right files/<type> sub-folder."""
     folder = RECEIVE_BASE / _file_type_folder(filename)
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / filename
