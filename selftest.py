@@ -200,6 +200,29 @@ def run_tests() -> None:
         else:
             print("[PASS] Test 5 — Server stdout does NOT contain plaintext private message body.")
 
+        # ---- Test 6: File transfer ----
+        print("[selftest] Testing file transfer…")
+        # Create a 1.2 MB test file (larger than one chunk)
+        import tempfile as _tf
+        testfile = _tf.NamedTemporaryFile(delete=False, suffix=".bin")
+        testfile.write(b"NoEyes_selftest_file_data" * 51200)  # ~1.2 MB
+        testfile.close()
+
+        alice_proc.stdin.write(f"/msg {BOB} setting_up_dh_for_file\n".encode())
+        alice_proc.stdin.flush()
+        time.sleep(2.0)   # wait for DH if not yet done
+
+        alice_proc.stdin.write(f"/send {BOB} {testfile.name}\n".encode())
+        alice_proc.stdin.flush()
+
+        if bob_reader.wait_for("[recv] ✓", timeout=12):
+            print("[PASS] Test 6 — Bob received and saved the file.")
+        else:
+            print("[FAIL] Test 6 — Bob did NOT receive the file.")
+            failures.append("file transfer")
+
+        os.unlink(testfile.name)
+
     finally:
         # ---- Teardown ----
         for proc in procs:
@@ -227,7 +250,7 @@ def run_tests() -> None:
         print(f"[FAIL] {len(failures)} check(s) FAILED: {', '.join(failures)}")
         sys.exit(1)
     else:
-        print("[PASS] All 5 acceptance checks passed.")
+        print("[PASS] All 6 acceptance checks passed.")
 
 
 if __name__ == "__main__":

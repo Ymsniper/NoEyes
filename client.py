@@ -15,6 +15,7 @@ Wire protocol:
     [4 bytes header_len BE][4 bytes payload_len BE][header JSON][encrypted payload]
 """
 
+import base64
 import json
 import queue
 import readline  # enables arrow keys, history, line editing in input()
@@ -32,6 +33,55 @@ from cryptography.fernet import Fernet, InvalidToken
 import encryption as enc
 import identity as id_mod
 import utils
+
+# ---------------------------------------------------------------------------
+# File receive directory and type classification
+# ---------------------------------------------------------------------------
+
+RECEIVE_BASE = Path("~/NoEyes_files").expanduser()
+
+_TYPE_MAP = {
+    "images": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg",
+               ".ico", ".tiff", ".tif", ".heic", ".heif"},
+    "videos": {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm",
+               ".m4v", ".mpg", ".mpeg"},
+    "audio":  {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma",
+               ".opus", ".aiff"},
+    "docs":   {".pdf", ".doc", ".docx", ".txt", ".md", ".xlsx", ".xls",
+               ".pptx", ".ppt", ".csv", ".odt", ".rtf", ".pages"},
+}
+
+FILE_CHUNK_SIZE = 4 * 1024 * 1024   # 4 MB per chunk — good balance of speed vs memory
+
+
+def _file_type_folder(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    for folder, exts in _TYPE_MAP.items():
+        if ext in exts:
+            return folder
+    return "other"
+
+
+def _unique_dest(filename: str) -> Path:
+    """Return a unique Path in the right ~/NoEyes_files sub-folder."""
+    folder = RECEIVE_BASE / _file_type_folder(filename)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / filename
+    counter = 1
+    while dest.exists():
+        stem, suffix = Path(filename).stem, Path(filename).suffix
+        dest = folder / f"{stem}_{counter}{suffix}"
+        counter += 1
+    return dest
+
+
+def _human_size(n: int) -> str:
+    """Return a human-readable file size string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+    return f"{n:.1f} PB"
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +178,8 @@ class NoEyesClient:
         self._msg_queue: dict[str, list] = {}
         # Buffer of incoming privmsg frames that arrived before pairwise key was ready
         self._privmsg_buffer: dict[str, list] = {}
+        # In-progress incoming file transfers: transfer_id → {meta, chunks}
+        self._incoming_files: dict[str, dict] = {}
 
         self.sock: Optional[socket.socket] = None
         self._sock_lock = threading.Lock()   # guards all socket writes
@@ -473,43 +525,149 @@ class NoEyesClient:
             self._handle_privmsg(h, p, ts)
 
     def _handle_privmsg(self, header: dict, payload: bytes, ts: str) -> None:
-        """Decrypt and display a private message."""
+        """Decrypt and dispatch a private message frame."""
         from_user = header.get("from", "?")
 
         pairwise = self._pairwise.get(from_user)
         if pairwise is None:
-            # Key not ready yet — buffer and replay once DH completes
             self._privmsg_buffer.setdefault(from_user, []).append((header, payload, ts))
             return
 
         try:
             body = json.loads(pairwise.decrypt(payload))
         except (InvalidToken, json.JSONDecodeError):
-            print(utils.cwarn(f"[msg] Could not decrypt private message from {from_user}."))
+            print(utils.cwarn(f"[msg] Could not decrypt message from {from_user}."))
             return
 
-        text   = body.get("text", "")
-        msg_ts = body.get("ts", ts)
-        sig_hex = body.get("sig", "")
+        subtype = header.get("subtype", "text")
 
-        # Verify Ed25519 signature against TOFU store
+        if subtype == "file_start":
+            self._handle_file_start(from_user, body)
+        elif subtype == "file_chunk":
+            self._handle_file_chunk(from_user, body)
+        elif subtype == "file_end":
+            self._handle_file_end(from_user, body, ts)
+        else:
+            # Plain text message
+            text    = body.get("text", "")
+            msg_ts  = body.get("ts", ts)
+            sig_hex = body.get("sig", "")
+
+            vk_hex   = self.tofu_store.get(from_user)
+            verified = False
+            if vk_hex and sig_hex:
+                try:
+                    vk_bytes  = bytes.fromhex(vk_hex)
+                    sig_bytes = bytes.fromhex(sig_hex)
+                    verified  = enc.verify_signature(vk_bytes, text.encode("utf-8"), sig_bytes)
+                except ValueError:
+                    pass
+
+            if not verified and vk_hex:
+                print(utils.cwarn(
+                    f"[SECURITY] Signature FAILED for message from {from_user} — displaying anyway."
+                ))
+
+            print(utils.format_privmsg(from_user, text, msg_ts, verified=verified))
+
+    # ------------------------------------------------------------------
+    # File transfer — receive side
+    # ------------------------------------------------------------------
+
+    def _handle_file_start(self, from_user: str, body: dict) -> None:
+        tid      = body.get("transfer_id", "")
+        filename = body.get("filename", "unknown")
+        total    = body.get("total_chunks", 1)
+        size     = body.get("total_size", 0)
+
+        # Open a temp file on disk — chunks written directly, no RAM buffer
+        import tempfile as _tf
+        folder = RECEIVE_BASE / _file_type_folder(filename)
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = _tf.NamedTemporaryFile(delete=False, dir=folder, suffix=".part")
+
+        self._incoming_files[tid] = {
+            "filename":     filename,
+            "total_chunks": total,
+            "total_size":   size,
+            "from":         from_user,
+            "received":     0,
+            "tmp_path":     tmp.name,
+            "tmp_file":     tmp,
+            "hasher":       __import__("hashlib").sha256(),
+            "next_index":   0,
+            "pending":      {},   # out-of-order chunks held briefly
+        }
+        print(utils.cinfo(
+            f"[recv] Incoming '{filename}' from {from_user} "
+            f"({_human_size(size)}, {total} chunk(s))…"
+        ))
+
+    def _handle_file_chunk(self, from_user: str, body: dict) -> None:
+        tid   = body.get("transfer_id", "")
+        index = body.get("index", 0)
+        data  = base64.b64decode(body.get("data_b64", ""))
+        if tid not in self._incoming_files:
+            return
+        meta = self._incoming_files[tid]
+        meta["pending"][index] = data
+        # Flush consecutive chunks to disk immediately
+        while meta["next_index"] in meta["pending"]:
+            chunk = meta["pending"].pop(meta["next_index"])
+            meta["tmp_file"].write(chunk)
+            meta["hasher"].update(chunk)
+            meta["received"]   += 1
+            meta["next_index"] += 1
+        if meta["total_chunks"] > 4:
+            pct = int(meta["received"] / meta["total_chunks"] * 100)
+            print(utils.cgrey(f"[recv] {pct}%…"), end="\r", flush=True)
+
+    def _handle_file_end(self, from_user: str, body: dict, ts: str) -> None:
+        tid     = body.get("transfer_id", "")
+        sig_hex = body.get("sig_hex", "")
+        if tid not in self._incoming_files:
+            print(utils.cwarn(f"[recv] Got file_end for unknown transfer {tid}"))
+            return
+
+        meta = self._incoming_files.pop(tid)
+        meta["tmp_file"].flush()
+        meta["tmp_file"].close()
+
+        if meta["received"] != meta["total_chunks"]:
+            print(utils.cwarn(
+                f"[recv] '{meta['filename']}' incomplete "
+                f"({meta['received']}/{meta['total_chunks']} chunks) — discarded."
+            ))
+            import os as _os; _os.unlink(meta["tmp_path"])
+            return
+
+        file_hash = meta["hasher"].digest()   # SHA-256, never loads full file
+
+        # Verify Ed25519 sig over the hash
         vk_hex   = self.tofu_store.get(from_user)
         verified = False
         if vk_hex and sig_hex:
             try:
-                vk_bytes = bytes.fromhex(vk_hex)
-                sig_bytes = bytes.fromhex(sig_hex)
-                verified = enc.verify_signature(vk_bytes, text.encode("utf-8"), sig_bytes)
+                verified = enc.verify_signature(
+                    bytes.fromhex(vk_hex), file_hash, bytes.fromhex(sig_hex)
+                )
             except ValueError:
                 pass
 
         if not verified and vk_hex:
             print(utils.cwarn(
-                f"[SECURITY] Signature verification FAILED for privmsg from {from_user}. "
-                "Message may be tampered — displaying anyway."
+                f"[SECURITY] File signature FAILED from {from_user} — saving anyway."
             ))
 
-        print(utils.format_privmsg(from_user, text, msg_ts, verified=verified))
+        # Move temp file to final named destination
+        dest = _unique_dest(meta["filename"])
+        import shutil as _sh
+        _sh.move(meta["tmp_path"], dest)
+        print(utils.cok(
+            f"[recv] ✓ '{meta['filename']}' from {from_user} saved to {dest} "
+            f"({_human_size(meta['total_size'])})"
+            f"{' ✓ verified' if verified else ''}"
+        ))
 
     def _handle_system(self, header: dict, ts: str) -> None:
         event = header.get("event", "")
@@ -641,26 +799,75 @@ class NoEyesClient:
         print(utils.cwarn(f"[warn] Unknown command: {cmd}. Type /help for help."))
 
     def _send_file(self, peer: str, filepath: str) -> None:
-        """Send an encrypted file to *peer* over the pairwise channel."""
+        """
+        Send an encrypted file to *peer* in 4MB streaming chunks.
+        Memory usage is bounded to ~8MB regardless of file size — works for 20GB+.
+        """
         path = Path(filepath).expanduser()
         if not path.exists():
             print(utils.cerr(f"[send] File not found: {filepath}"))
             return
-        data = path.read_bytes()
+
         pairwise = self._pairwise.get(peer)
         if pairwise is None:
-            print(utils.cwarn(f"[send] No pairwise key with {peer} — run /msg first."))
+            print(utils.cwarn(f"[send] No pairwise key with {peer} yet — send a /msg first."))
             return
-        sig = enc.sign_message(self.sk_bytes, data).hex()
-        inner = json.dumps({
-            "filename": path.name,
-            "data_hex": data.hex(),
-            "sig":      sig,
-        }).encode()
-        payload = pairwise.encrypt(inner)
-        header = {"type": "privmsg", "to": peer, "from": self.username, "subtype": "file"}
-        self._send( header, payload)
-        print(utils.cok(f"[send] Sent '{path.name}' ({len(data)} bytes) to {peer}."))
+
+        import uuid, hashlib as _hl
+        file_size = path.stat().st_size
+        total     = max(1, (file_size + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE)
+        tid       = uuid.uuid4().hex
+
+        print(utils.cinfo(
+            f"[send] '{path.name}' → {peer}  "
+            f"{_human_size(file_size)}, {total} chunk(s)"
+        ))
+
+        def _enc_send(subtype: str, body: dict) -> bool:
+            payload = pairwise.encrypt(json.dumps(body).encode())
+            return self._send(
+                {"type": "privmsg", "to": peer, "from": self.username,
+                 "subtype": subtype},
+                payload,
+            )
+
+        # 1. file_start
+        if not _enc_send("file_start", {
+            "transfer_id":  tid,
+            "filename":     path.name,
+            "total_size":   file_size,
+            "total_chunks": total,
+        }):
+            print(utils.cerr("[send] Failed sending file_start."))
+            return
+
+        # 2. Stream chunks — only FILE_CHUNK_SIZE bytes in RAM at a time
+        hasher = _hl.sha256()
+        with open(path, "rb") as fh:
+            for i in range(total):
+                chunk = fh.read(FILE_CHUNK_SIZE)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                ok = _enc_send("file_chunk", {
+                    "transfer_id": tid,
+                    "index":       i,
+                    "data_b64":    base64.b64encode(chunk).decode(),
+                })
+                if not ok:
+                    print(utils.cerr(f"[send] Failed on chunk {i+1}/{total}."))
+                    return
+                if total > 4:
+                    pct = int((i + 1) / total * 100)
+                    print(utils.cgrey(f"[send] {pct}%…"), end="\r", flush=True)
+
+        # 3. file_end — sign the SHA-256 hash (not the raw bytes)
+        sig_hex = enc.sign_message(self.sk_bytes, hasher.digest()).hex()
+        if not _enc_send("file_end", {"transfer_id": tid, "sig_hex": sig_hex}):
+            print(utils.cerr("[send] Failed sending file_end."))
+            return
+
+        print(utils.cok(f"[send] ✓ '{path.name}' sent ({_human_size(file_size)})"))
 
     def _print_help(self) -> None:
         help_text = """
