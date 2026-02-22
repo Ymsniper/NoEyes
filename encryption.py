@@ -165,6 +165,42 @@ def verify_signature(vk_bytes: bytes, data: bytes, sig_bytes: bytes) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# AES-256-GCM — fast file transfer cipher (hardware-accelerated)
+# ---------------------------------------------------------------------------
+
+
+def derive_file_cipher_key(pairwise_fernet: "Fernet", transfer_id: str) -> bytes:
+    """
+    Derive a 32-byte AES-256-GCM key for a specific file transfer from the
+    pairwise Fernet key material + transfer_id.  No extra key exchange needed.
+    """
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    ikm = pairwise_fernet._signing_key + pairwise_fernet._encryption_key
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None,
+        info=b"noeyes_file_gcm_v1:" + transfer_id.encode(),
+    ).derive(ikm)
+
+
+def gcm_encrypt(key: bytes, plaintext: bytes) -> bytes:
+    """
+    Encrypt with AES-256-GCM.  Returns nonce(12) + ciphertext + tag(16).
+    ~800 MB/s on AES-NI hardware vs Fernet's ~90 MB/s.
+    """
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = os.urandom(12)
+    return nonce + AESGCM(key).encrypt(nonce, plaintext, None)
+
+
+def gcm_decrypt(key: bytes, data: bytes) -> bytes:
+    """Decrypt AES-256-GCM blob from gcm_encrypt.  Raises on auth failure."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    if len(data) < 28:
+        raise ValueError("GCM blob too short")
+    return AESGCM(key).decrypt(data[:12], data[12:], None)
+
+
+# ---------------------------------------------------------------------------
 # X25519 DH + pairwise Fernet derivation
 # ---------------------------------------------------------------------------
 

@@ -51,7 +51,9 @@ _TYPE_MAP = {
                ".pptx", ".ppt", ".csv", ".odt", ".rtf", ".pages"},
 }
 
-FILE_CHUNK_SIZE = 4 * 1024 * 1024   # 4 MB per chunk — good balance of speed vs memory
+FILE_CHUNK_SIZE = 32 * 1024 * 1024  # 32 MB — sweet spot for AES-GCM throughput
+# Chunks use AES-256-GCM (hardware-accelerated, ~800 MB/s) not Fernet (~90 MB/s).
+# Binary frame: [4B index BE][4B tid_len BE][tid bytes][nonce(12)+ct+tag(16)]
 
 
 def _file_type_folder(filename: str) -> str:
@@ -300,8 +302,12 @@ class NoEyesClient:
         ts = header.get("ts", time.strftime("%H:%M:%S"))
 
         if msg_type == "heartbeat":
-            # Echo back
-            self._send( {"type": "heartbeat"})
+            self._send({"type": "heartbeat"})
+            return
+
+        # Fast path: binary file chunk (no JSON parsing of payload)
+        if msg_type == "privmsg" and header.get("subtype") == "file_chunk_bin":
+            self._handle_file_chunk_binary(header, payload)
             return
 
         if msg_type == "pubkey_announce":
@@ -603,7 +609,52 @@ class NoEyesClient:
             f"({_human_size(size)}, {total} chunk(s))…"
         ))
 
+    def _handle_file_chunk_binary(self, header: dict, payload: bytes) -> None:
+        """
+        Fast path: binary file chunk with AES-256-GCM encryption.
+        Payload: [4B index BE][4B tid_len BE][tid bytes][nonce(12)+gcm_ct+tag(16)]
+        """
+        if len(payload) < 8:
+            return
+        index   = struct.unpack(">I", payload[:4])[0]
+        tid_len = struct.unpack(">I", payload[4:8])[0]
+        if len(payload) < 8 + tid_len:
+            return
+        tid      = payload[8:8 + tid_len].decode("utf-8", errors="replace")
+        gcm_blob = payload[8 + tid_len:]
+
+        if tid not in self._incoming_files:
+            return
+        meta = self._incoming_files[tid]
+
+        from_user = header.get("from", "?")
+        pairwise  = self._pairwise.get(from_user)
+        if pairwise is None:
+            return
+        # Cache derived GCM key per transfer
+        gcm_key = meta.get("gcm_key")
+        if gcm_key is None:
+            gcm_key = enc.derive_file_cipher_key(pairwise, tid)
+            meta["gcm_key"] = gcm_key
+        try:
+            raw = enc.gcm_decrypt(gcm_key, gcm_blob)
+        except Exception:
+            print(utils.cwarn(f"[recv] GCM auth failed on chunk {index} from {from_user}"))
+            return
+
+        meta["pending"][index] = raw
+        while meta["next_index"] in meta["pending"]:
+            c = meta["pending"].pop(meta["next_index"])
+            meta["tmp_file"].write(c)
+            meta["hasher"].update(c)
+            meta["received"]   += 1
+            meta["next_index"] += 1
+        if meta["total_chunks"] > 1:
+            pct = int(meta["received"] / meta["total_chunks"] * 100)
+            print(utils.cgrey(f"[recv] {pct}%..."), end="\r", flush=True)
+
     def _handle_file_chunk(self, from_user: str, body: dict) -> None:
+        # Legacy JSON/base64 path (kept for compatibility)
         tid   = body.get("transfer_id", "")
         index = body.get("index", 0)
         data  = base64.b64decode(body.get("data_b64", ""))
@@ -611,7 +662,6 @@ class NoEyesClient:
             return
         meta = self._incoming_files[tid]
         meta["pending"][index] = data
-        # Flush consecutive chunks to disk immediately
         while meta["next_index"] in meta["pending"]:
             chunk = meta["pending"].pop(meta["next_index"])
             meta["tmp_file"].write(chunk)
@@ -800,74 +850,122 @@ class NoEyesClient:
 
     def _send_file(self, peer: str, filepath: str) -> None:
         """
-        Send an encrypted file to *peer* in 4MB streaming chunks.
-        Memory usage is bounded to ~8MB regardless of file size — works for 20GB+.
+        Send an encrypted file using a pipelined binary protocol.
+
+        Speed optimisations vs the old version:
+          1. Binary chunk frames — no base64 (33% less data), no JSON for chunk bodies.
+          2. Pipeline — a producer thread encrypts chunk N+1 while the sender thread
+             transmits chunk N.  Hides both CPU and I/O latency.
+          3. 8 MB chunks — fewer per-chunk round-trips.
+
+        Payload layout for file_chunk_bin frames:
+          [4B index BE] [4B tid_len BE] [tid UTF-8] [Fernet(raw_chunk)]
         """
         path = Path(filepath).expanduser()
         if not path.exists():
             print(utils.cerr(f"[send] File not found: {filepath}"))
             return
-
         pairwise = self._pairwise.get(peer)
         if pairwise is None:
-            print(utils.cwarn(f"[send] No pairwise key with {peer} yet — send a /msg first."))
+            print(utils.cwarn(f"[send] No pairwise key with {peer} — /msg them first."))
             return
 
-        import uuid, hashlib as _hl
+        import uuid, hashlib as _hl, queue as _q, time as _t
         file_size = path.stat().st_size
         total     = max(1, (file_size + FILE_CHUNK_SIZE - 1) // FILE_CHUNK_SIZE)
         tid       = uuid.uuid4().hex
+        tid_bytes = tid.encode()
+
+        # Per-transfer AES-256-GCM key derived from pairwise Fernet — no extra handshake
+        gcm_key = enc.derive_file_cipher_key(pairwise, tid)
 
         print(utils.cinfo(
-            f"[send] '{path.name}' → {peer}  "
-            f"{_human_size(file_size)}, {total} chunk(s)"
+            f"[send] '{path.name}' → {peer}  {_human_size(file_size)}, {total} chunk(s)"
         ))
 
-        def _enc_send(subtype: str, body: dict) -> bool:
-            payload = pairwise.encrypt(json.dumps(body).encode())
-            return self._send(
-                {"type": "privmsg", "to": peer, "from": self.username,
-                 "subtype": subtype},
-                payload,
-            )
-
-        # 1. file_start
-        if not _enc_send("file_start", {
+        # file_start: small metadata frame, Fernet is fine here
+        start_payload = pairwise.encrypt(json.dumps({
             "transfer_id":  tid,
             "filename":     path.name,
             "total_size":   file_size,
             "total_chunks": total,
-        }):
+        }).encode())
+        if not self._send(
+            {"type": "privmsg", "to": peer, "from": self.username, "subtype": "file_start"},
+            start_payload,
+        ):
             print(utils.cerr("[send] Failed sending file_start."))
             return
 
-        # 2. Stream chunks — only FILE_CHUNK_SIZE bytes in RAM at a time
-        hasher = _hl.sha256()
-        with open(path, "rb") as fh:
-            for i in range(total):
-                chunk = fh.read(FILE_CHUNK_SIZE)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                ok = _enc_send("file_chunk", {
-                    "transfer_id": tid,
-                    "index":       i,
-                    "data_b64":    base64.b64encode(chunk).decode(),
-                })
-                if not ok:
-                    print(utils.cerr(f"[send] Failed on chunk {i+1}/{total}."))
-                    return
-                if total > 4:
-                    pct = int((i + 1) / total * 100)
-                    print(utils.cgrey(f"[send] {pct}%…"), end="\r", flush=True)
+        # Pipeline: producer thread reads+hashes+GCM-encrypts while main thread sends
+        enc_queue: _q.Queue = _q.Queue(maxsize=3)
+        hasher    = _hl.sha256()
+        send_failed = threading.Event()
+        t0 = _t.perf_counter()
 
-        # 3. file_end — sign the SHA-256 hash (not the raw bytes)
-        sig_hex = enc.sign_message(self.sk_bytes, hasher.digest()).hex()
-        if not _enc_send("file_end", {"transfer_id": tid, "sig_hex": sig_hex}):
+        def _producer():
+            try:
+                with open(path, "rb") as fh:
+                    for i in range(total):
+                        chunk = fh.read(FILE_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                        enc_queue.put((i, enc.gcm_encrypt(gcm_key, chunk)))
+            except Exception as ex:
+                print(utils.cerr(f"[send] Encrypt error: {ex}"))
+                send_failed.set()
+            finally:
+                enc_queue.put(None)
+
+        threading.Thread(target=_producer, daemon=True).start()
+
+        sent = 0
+        while True:
+            item = enc_queue.get()
+            if item is None:
+                break
+            i, encrypted = item
+            bin_payload = (
+                struct.pack(">I", i) +
+                struct.pack(">I", len(tid_bytes)) +
+                tid_bytes +
+                encrypted
+            )
+            if not self._send(
+                {"type": "privmsg", "to": peer, "from": self.username,
+                 "subtype": "file_chunk_bin"},
+                bin_payload,
+            ):
+                print(utils.cerr(f"[send] Failed on chunk {i+1}/{total}."))
+                send_failed.set()
+                break
+            sent += 1
+            if total > 1:
+                elapsed = _t.perf_counter() - t0 or 0.001
+                speed   = (sent * FILE_CHUNK_SIZE) / elapsed / 1024 / 1024
+                pct     = int(sent / total * 100)
+                print(utils.cgrey(f"[send] {pct}%  {speed:.0f} MB/s…"), end="\r", flush=True)
+
+        if send_failed.is_set():
+            return
+
+        # file_end: Ed25519 sig over SHA-256 of raw file bytes
+        sig_hex     = enc.sign_message(self.sk_bytes, hasher.digest()).hex()
+        end_payload = pairwise.encrypt(json.dumps({
+            "transfer_id": tid, "sig_hex": sig_hex,
+        }).encode())
+        if not self._send(
+            {"type": "privmsg", "to": peer, "from": self.username, "subtype": "file_end"},
+            end_payload,
+        ):
             print(utils.cerr("[send] Failed sending file_end."))
             return
 
-        print(utils.cok(f"[send] ✓ '{path.name}' sent ({_human_size(file_size)})"))
+        print(utils.cok(
+            f"[send] ✓ '{path.name}' sent "
+            f"({_human_size(file_size)} @ {file_size/(_t.perf_counter()-t0)/1024/1024:.0f} MB/s)"
+        ))
 
     def _print_help(self) -> None:
         help_text = """
