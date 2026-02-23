@@ -235,6 +235,45 @@ def run_tests() -> None:
         else:
             print("[FAIL] Test 7 — Pairwise key was lost after room switch.")
             failures.append("pairwise key lost on room switch")
+        # ---- Test 8: nick change doesn't break /msg (Bug 2 fix) ----
+        print("[selftest] Testing /msg after nick change...")
+        NICK_MSG = "msg_after_nick_change"
+        alice_proc.stdin.write(b"/join general\n"); alice_proc.stdin.flush()
+        time.sleep(0.8)
+        bob_proc.stdin.write(b"/nick bobrenamed\n"); bob_proc.stdin.flush()
+        time.sleep(0.8)
+        alice_proc.stdin.write(("/msg bobrenamed " + NICK_MSG + "\n").encode())
+        alice_proc.stdin.flush()
+        if bob_reader.wait_for(NICK_MSG, timeout=10):
+            print("[PASS] Test 8 - /msg works after peer nick change.")
+        else:
+            print("[FAIL] Test 8 - /msg failed after peer nick change.")
+            failures.append("msg broken after nick change")
+
+        # ---- Test 9: simultaneous /msg both ways (Bug 3 fix) ----
+        print("[selftest] Testing simultaneous /msg from both sides...")
+        SIMUL_A = "simul_from_alice"
+        SIMUL_B = "simul_from_bob"
+        carol_proc = _start([
+            "noeyes.py", "--connect", "127.0.0.1",
+            "--port", str(TEST_PORT),
+            "--username", "carol",
+            "--key-file", keyfile.name,
+        ], stdin=True)
+        procs.append(carol_proc)
+        carol_reader = _OutputReader(carol_proc)
+        time.sleep(1.0)
+        alice_proc.stdin.write(("/msg carol " + SIMUL_A + "\n").encode())
+        alice_proc.stdin.flush()
+        carol_proc.stdin.write(("/msg " + ALICE + " " + SIMUL_B + "\n").encode())
+        carol_proc.stdin.flush()
+        a_ok = carol_reader.wait_for(SIMUL_A, timeout=10)
+        c_ok = alice_reader.wait_for(SIMUL_B, timeout=10)
+        if a_ok and c_ok:
+            print("[PASS] Test 9 - Simultaneous DH resolved; both messages delivered.")
+        else:
+            print("[FAIL] Test 9 - Simultaneous DH failed (alice->carol: %s, carol->alice: %s)." % (a_ok, c_ok))
+            failures.append("simultaneous DH initiation")
 
     finally:
         # ---- Teardown ----
@@ -263,7 +302,7 @@ def run_tests() -> None:
         print(f"[FAIL] {len(failures)} check(s) FAILED: {', '.join(failures)}")
         sys.exit(1)
     else:
-        print("[PASS] All 7 acceptance checks passed.")
+        print("[PASS] All 9 acceptance checks passed.")
 
 
 if __name__ == "__main__":

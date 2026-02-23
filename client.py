@@ -256,6 +256,7 @@ class NoEyesClient:
             # Announce our Ed25519 pubkey
             self._announce_pubkey()
 
+
             self._running = True
 
             self._recv_thread  = threading.Thread(target=self._recv_loop,  daemon=True)
@@ -388,6 +389,8 @@ class NoEyesClient:
     # DH handshake
     # ------------------------------------------------------------------
 
+    _DH_TIMEOUT = 30.0   # seconds before a stale pending handshake is retried
+
     def _ensure_dh(self, peer: str, then_send: Optional[tuple] = None) -> None:
         """
         Ensure a pairwise Fernet with *peer* is established.
@@ -404,10 +407,21 @@ class NoEyesClient:
             self._msg_queue.setdefault(peer, []).append(then_send[0])
 
         if peer in self._dh_pending:
-            return  # handshake already in flight
+            # Bug fix: if the pending handshake is stale (dh_resp never arrived,
+            # e.g. peer was briefly offline or resp was lost), clear and re-initiate
+            # rather than blocking forever with no feedback.
+            age = time.monotonic() - self._dh_pending[peer]["ts"]
+            if age < self._DH_TIMEOUT:
+                return  # genuinely in flight, keep waiting
+            print(utils.cwarn(f"[dh] Key exchange with {peer} timed out — retrying…"))
+            del self._dh_pending[peer]
 
         priv_bytes, pub_bytes = enc.dh_generate_keypair()
-        self._dh_pending[peer] = {"priv": priv_bytes, "pub": pub_bytes}
+        self._dh_pending[peer] = {
+            "priv": priv_bytes,
+            "pub":  pub_bytes,
+            "ts":   time.monotonic(),   # used to detect stale handshakes
+        }
 
         # Encrypt the DH public key with the group key so the server cannot read it.
         inner = json.dumps({"dh_pub": pub_bytes.hex()}).encode()
@@ -418,7 +432,7 @@ class NoEyesClient:
             "to":   peer,
             "from": self.username,
         }
-        self._send( header, encrypted_payload)
+        self._send(header, encrypted_payload)
         print(utils.cgrey(f"[dh] Initiating key exchange with {peer}…"))
 
     def _handle_dh_init(self, header: dict, payload: bytes) -> None:
@@ -435,6 +449,24 @@ class NoEyesClient:
         except (InvalidToken, KeyError, ValueError):
             print(utils.cwarn(f"[dh] Could not decrypt dh_init from {from_user}"))
             return
+
+        # Bug fix: simultaneous DH initiation tiebreaker.
+        # If both users type /msg at the same time, both send dh_init. Without a
+        # tiebreaker, both also respond with dh_resp, producing two different derived
+        # keys — so messages silently fail to decrypt on one side.
+        #
+        # Resolution: the user whose name is lexicographically SMALLER is always the
+        # "true initiator". When the larger-named user receives a dh_init while they
+        # have their own pending, they discard their pending and respond instead.
+        # When the smaller-named user receives a dh_init mid-handshake, they ignore it
+        # and wait for the dh_resp to their own init.
+        if from_user in self._dh_pending:
+            if self.username < from_user:
+                # We are the true initiator — ignore their dh_init, wait for dh_resp.
+                return
+            else:
+                # They are the true initiator — discard our pending and respond.
+                del self._dh_pending[from_user]
 
         # Generate our own DH keypair for this session
         priv_bytes, pub_bytes = enc.dh_generate_keypair()
@@ -453,9 +485,15 @@ class NoEyesClient:
             "to":   from_user,
             "from": self.username,
         }
-        self._send( header_resp, resp_payload)
+        self._send(header_resp, resp_payload)
 
-        # Replay any privmsgs that arrived before the key was ready
+        # Flush any outgoing messages queued while waiting for this handshake.
+        # This matters when the tiebreaker makes us the responder mid-flight:
+        # we queued our own /msg in _msg_queue but _handle_dh_resp never fires for us.
+        for text in self._msg_queue.pop(from_user, []):
+            self._send_privmsg_encrypted(from_user, text)
+
+        # Replay any incoming privmsgs that arrived before the key was ready
         self._flush_privmsg_buffer(from_user)
 
     def _handle_dh_resp(self, header: dict, payload: bytes) -> None:
@@ -764,9 +802,15 @@ class NoEyesClient:
             old = header.get("old_nick", "?")
             new = header.get("new_nick", "?")
             print(utils.format_system(f"{old} is now known as {new}.", ts))
-            # Move pairwise state to new nick
+            # Move ALL pairwise state to new nick — including in-flight handshakes.
+            # Without migrating _dh_pending, a dh_resp from the renamed user
+            # arrives with the new name but is silently dropped (not found in pending).
             if old in self._pairwise:
                 self._pairwise[new] = self._pairwise.pop(old)
+            if old in self._dh_pending:
+                self._dh_pending[new] = self._dh_pending.pop(old)
+            if old in self._msg_queue:
+                self._msg_queue[new] = self._msg_queue.pop(old)
         elif event == "rate_limit":
             print(utils.cwarn("[warn] You are sending messages too fast."))
         elif event == "nick_error":
