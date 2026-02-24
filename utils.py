@@ -150,16 +150,15 @@ def _strip_ansi(s: str) -> str:
 
 def _run_animation(prefix: str, plaintext: str) -> None:
     """
-    Two-phase cinematic decrypt animation.
+    Two-phase cinematic decrypt animation — wrap-proof.
 
-    Phase 1 — cipher: n random chars stream out in cyan at _CIPHER_CHAR_DELAY
-               each.  No line cap — let them wrap naturally.
+    Phase 1: stream n cipher chars in cyan (exactly matches plaintext length),
+             wrapping freely across lines.
 
-    Phase 2 — reveal: cursor moves back to the start of the cipher block
-               (using the exact lines_up formula), reprints the prefix to
-               overwrite it, then for each position flickers 3 random chars
-               (using \033[1D to stay in place) before landing the real char.
-               No erase escape used — everything is direct overwrite.
+    Phase 2: move cursor back up using (prefix_vis + n) // term_width,
+             go to col 0, reprint prefix, then type each plaintext char one
+             by one with a short delay.  NO cursor tricks during the reveal —
+             that was causing wrap corruption when flicker chars hit line ends.
     """
     n = len(plaintext)
     if n == 0:
@@ -174,7 +173,7 @@ def _run_animation(prefix: str, plaintext: str) -> None:
 
     prefix_vis = len(_strip_ansi(prefix))
 
-    # ── Phase 1: full-length cipher stream ───────────────────────────────────
+    # ── Phase 1: stream cipher noise ─────────────────────────────────────────
     sys.stdout.write(prefix)
     sys.stdout.flush()
 
@@ -185,34 +184,24 @@ def _run_animation(prefix: str, plaintext: str) -> None:
 
     time.sleep(_REVEAL_PAUSE)
 
-    # ── Move cursor back to start of cipher block ────────────────────────────
-    # After writing prefix_vis + n chars from col 0, cursor row =
-    # (prefix_vis + n) // term_width  (integer division, no rounding needed).
+    # ── Move back to start of cipher block ───────────────────────────────────
+    # After writing prefix_vis + n chars from col 0, cursor is on row:
+    #   (prefix_vis + n) // term_width  (integer division)
     lines_up = (prefix_vis + n) // term_width
     if lines_up:
-        sys.stdout.write(f"\033[{lines_up}A")   # move up
-    sys.stdout.write("\r" + prefix)              # col 0, overwrite prefix
+        sys.stdout.write(f"\033[{lines_up}A")
+    sys.stdout.write("\r" + prefix)
     sys.stdout.flush()
 
-    # ── Phase 2: flicker-reveal each char ────────────────────────────────────
-    # Per-char budget: start slow (dramatic), speed up as message resolves.
-    per_char    = min(_PLAIN_CHAR_MAX, _PLAIN_TOTAL_CAP / n)
-    flicker_dur = min(0.025, per_char / 4)
-    settle_dur  = max(0.008, per_char - 3 * flicker_dur)
+    # ── Phase 2: overwrite cipher with plaintext, char by char ───────────────
+    # Deliberately NO cursor movement here — any move that wraps a line will
+    # corrupt the column math and cause partial overwrites.
+    per_char = min(_PLAIN_CHAR_MAX, _PLAIN_TOTAL_CAP / n)
 
     for ch in plaintext:
-        # 3 flicker cycles: write a random cipher char then step back 1 col
-        for _ in range(3):
-            sys.stdout.write(
-                random.choice(_CIPHER_COLORS) + random.choice(_CIPHER_POOL) + RESET
-                + "\033[1D"
-            )
-            sys.stdout.flush()
-            time.sleep(flicker_dur)
-        # Land the real character
         sys.stdout.write(ch)
         sys.stdout.flush()
-        time.sleep(settle_dur)
+        time.sleep(per_char)
 
     sys.stdout.write("\n")
     sys.stdout.flush()
@@ -266,9 +255,16 @@ def privmsg_decrypt_animation(
 
 
 def format_message(username: str, text: str, timestamp: str) -> str:
-    """Format a chat line for display."""
+    """Format a chat line for display (incoming — other users)."""
     ts  = cgrey(f"[{timestamp}]")
     usr = colorize(username, GREEN, bold=True)
+    return f"{ts} {usr}: {text}"
+
+
+def format_own_message(username: str, text: str, timestamp: str) -> str:
+    """Format a sent message — own name in bold yellow to stand out from others."""
+    ts  = cgrey(f"[{timestamp}]")
+    usr = colorize(username, YELLOW, bold=True)
     return f"{ts} {usr}: {text}"
 
 

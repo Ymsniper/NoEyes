@@ -541,9 +541,11 @@ class NoEyesClient:
             "room": self.room,
             "from": self.username,
         }
-        self._send( header, payload)
-        # Show locally
-        print(utils.format_message(self.username, text, time.strftime("%H:%M:%S")))
+        self._send(header, payload)
+        ts = time.strftime("%H:%M:%S")
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
+        print(utils.format_own_message(self.username, text, ts))
 
     def _send_privmsg_encrypted(self, peer: str, text: str) -> None:
         """Send a /msg to *peer* using the established pairwise Fernet."""
@@ -570,6 +572,8 @@ class NoEyesClient:
             "from": self.username,
         }
         self._send( header, payload)
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
         print(utils.format_privmsg(f"you → {peer}", text, ts, verified=True))
 
     def _handle_chat(self, header: dict, payload: bytes, ts: str) -> None:
