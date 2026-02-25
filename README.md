@@ -91,13 +91,30 @@ python noeyes.py --connect SERVER_IP --port 5000 --username bob --key-file ./cha
 
 That is it. Alice and bob can now chat, send private messages, and transfer files — and the server sees none of it.
 
-### Connecting from outside your network
+### Connecting from outside your network (bore tunnel)
 
-If the server is on a home machine behind a router:
+If your router blocks inbound connections or you're behind CGNAT (common with mobile providers like Orange), use **bore** — free, no account, no card required.
 
-1. Port-forward TCP `5000` to your machine in your router settings
-2. Find your public IP (google "what is my ip")
-3. Share that IP — participants connect with `--connect YOUR_PUBLIC_IP`
+**Install bore once:**
+```bash
+curl -L https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+sudo mv bore /usr/local/bin/
+```
+
+That's it. Now whenever you start the server, bore launches automatically and prints your public address:
+
+```
+python noeyes.py --server --port 5000
+
+  ┌─ bore tunnel active ─────────────────────────────
+  │  address : bore.pub:41572
+  │  share   : python noeyes.py --connect bore.pub --port 41572 --key-file ./chat.key
+  └──────────────────────────────────────────────────
+```
+
+Share that connect command with anyone — works from anywhere, any network, any device.
+
+> **Note:** the port changes every time you restart the server. Share the new port each session.
 
 ---
 
@@ -123,9 +140,9 @@ If the server is on a home machine behind a router:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Alice ──────────────────────────────────────── Bob         │
-│    │          Encrypted payload (opaque)         │          │
-│    │                    │                        │          │
-│    └──────────► SERVER ─┴◄───────────────────────┘          │
+│    │          Encrypted payload (opaque)          │         │
+│    │                    │                         │         │
+│    └──────────► SERVER ─┴◄───────────────────────┘         │
 │                    │                                        │
 │              Blind forwarder:                               │
 │              reads header only                              │
@@ -173,6 +190,7 @@ NoEyes/
 ├── identity.py     — Ed25519 keypair generation and TOFU pubkey store
 ├── utils.py        — Terminal output, ANSI colors, decrypt animation, thread-safe input
 ├── config.py       — Configuration loading and CLI parsing
+├── selftest.py     — 21-check automated acceptance test suite
 ├── CHANGELOG.md    — Version history
 └── README.md
 ```
@@ -225,6 +243,39 @@ Each room has its own key: `HKDF(master_key, room_name)`. Knowing `chat.key` alo
 | Socket safety | `threading.Lock` per connection | Prevents frame interleaving under concurrent writes |
 
 **What the server learns:** who is connected, which room they are in, and the byte length and timestamp of each frame. Nothing else.
+
+---
+
+## Running the Tests
+
+```bash
+python selftest.py
+```
+
+```
+[PASS] Test 1  — Bob received group message.
+[PASS] Test 2  — Server stdout does NOT contain plaintext message body.
+[PASS] Test 4  — Bob received private message.
+[PASS] Test 5  — Server stdout does NOT contain plaintext private message body.
+[PASS] Test 6  — Bob received and saved the file.
+[PASS] Test 7  — Pairwise key survived room switch.
+[PASS] Test 8  — /msg works after peer nick change.
+[PASS] Test 9  — Simultaneous DH resolved; both messages delivered.
+[PASS] Test 10 — Reverse /msg delivered.
+[PASS] Test 11 — /msg works after recipient switches room.
+[PASS] Test 12 — /msg works after sender renames.
+[PASS] Test 13 — All 3 queued messages delivered after DH.
+[PASS] Test 14 — Cross-room nick change propagated.
+[PASS] Test 15 — /msg to self rejected gracefully.
+[PASS] Test 16 — DH re-established after reconnect.
+[PASS] Test 17a — No duplicate on send.
+[PASS] Test 17b — Own old message visible after /leave.
+[PASS] Test 17c — Away message visible after /leave.
+[PASS] Test 17d — No duplicate own msg after room switch.
+[PASS] Test 17e — No duplicate away msg after room switch.
+
+[PASS] All 21 acceptance checks passed.
+```
 
 ---
 
