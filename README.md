@@ -230,7 +230,7 @@ Each room has its own key: `HKDF(master_key, room_name)`. Knowing `chat.key` alo
 
 ## Demo
 
-[![asciicast](https://asciinema.org/a/jEKQCJ8yNV0FU0gM.svg)](https://asciinema.org/a/jEKQCJ8yNV0FU0gM)
+[![asciicast](https://asciinema.org/a/NePYgYX5uxiHxpxw.svg)](https://asciinema.org/a/NePYgYX5uxiHxpxw)
 
 ---
 
