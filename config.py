@@ -87,6 +87,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--daemon",   action="store_true",
                    help="Run server as background daemon (Unix only).")
 
+    # Bore tunnel — opt-out flag.
+    #
+    # WHY run WITH bore (default):
+    #   • Your server is behind a residential or mobile ISP (Orange, Djezzy…)
+    #     that blocks all inbound TCP connections regardless of port-forwarding.
+    #   • You are on CGNAT — your router has no real public IP.
+    #   • You want clients on cellular data to connect without configuring
+    #     anything on your router.
+    #   • Quick demos or one-off sessions where sharing a public address is
+    #     more convenient than telling people your IP.
+    #
+    # WHY run WITHOUT bore (--no-bore):
+    #   • You are on a LAN and only local clients will connect — bore adds
+    #     unnecessary latency and a dependency on bore.pub being reachable.
+    #   • Your server is already reachable from the Internet via a static IP
+    #     or a properly forwarded port — no tunnel needed.
+    #   • Air-gapped or offline network where outbound connections are
+    #     restricted and bore.pub cannot be reached.
+    #   • You have your own tunnel solution (WireGuard, Tailscale, ngrok…).
+    #   • Security policy forbids outbound TCP to third-party relay servers.
+    p.add_argument("--no-bore",  action="store_true",
+                   help=(
+                       "Disable the automatic bore tunnel. "
+                       "Use this when the server is already reachable "
+                       "(static IP, LAN-only, or a custom tunnel), "
+                       "or when outbound connections to bore.pub are blocked."
+                   ))
+
     return p
 
 
@@ -138,6 +166,11 @@ def load_config(argv: list[str] | None = None) -> dict[str, Any]:
 
         # Daemon
         "daemon":   args.daemon,
+
+        # Bore tunnel opt-out
+        # True  → skip bore even if installed
+        # False → launch bore automatically (default behaviour)
+        "no_bore":  args.no_bore,
 
         # Identity paths (not exposed as CLI flags; change via JSON config)
         "identity_path": jcfg.get("identity_path", DEFAULT_IDENTITY_PATH),

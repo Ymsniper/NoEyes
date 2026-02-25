@@ -3,7 +3,7 @@
 noeyes.py — NoEyes entry point.
 
 Usage:
-    python noeyes.py --server [--port PORT] [--key PASS | --key-file PATH]
+    python noeyes.py --server [--port PORT] [--no-bore] [--key PASS | --key-file PATH]
     python noeyes.py --connect HOST [--port PORT] [--key PASS | --key-file PATH]
     python noeyes.py --gen-key --key-file PATH
 """
@@ -113,7 +113,16 @@ def run_server(cfg: dict) -> None:
     if cfg.get("daemon"):
         _daemonize()
 
-    _start_bore(cfg["port"])
+    if cfg.get("no_bore"):
+        # --no-bore was passed: skip the tunnel entirely and explain why that
+        # can be the right choice (LAN server, static IP, custom tunnel, etc.).
+        print(utils.cgrey(
+            "[bore] tunnel disabled via --no-bore.\n"
+            "       Clients on the same network can connect directly:\n"
+            f"       python noeyes.py --connect <YOUR-IP> --port {cfg['port']} --key-file ./chat.key"
+        ))
+    else:
+        _start_bore(cfg["port"])
 
     server.run()
 
