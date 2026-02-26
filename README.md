@@ -280,8 +280,8 @@ python selftest.py
 ---
 
 ## Demo
+<script src="https://asciinema.org/a/NePYgYX5uxiHxpxw.js" id="asciicast-NePYgYX5uxiHxpxw" async="true"></script>
 
-[![asciicast](https://asciinema.org/a/NePYgYX5uxiHxpxw.svg)](https://asciinema.org/a/NePYgYX5uxiHxpxw)
 
 ---
 
