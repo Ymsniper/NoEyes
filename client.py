@@ -202,6 +202,10 @@ class NoEyesClient:
         # Queued outgoing file sends waiting for DH to complete
         self._file_queue: dict[str, list] = {}  # peer -> [(filepath, ...),]
 
+        # Users whose pubkey didn't match our TOFU store (possible key regen or attack)
+        # Messages from these users are shown with a ⚠ marker, not silently dropped.
+        self._tofu_mismatched: set = set()
+
         # Buffer of incoming privmsg frames that arrived before pairwise key was ready
         self._privmsg_buffer: dict[str, list] = {}
         # In-progress incoming file transfers: transfer_id → {meta, chunks}
@@ -407,10 +411,15 @@ class NoEyesClient:
         if is_new:
             utils.print_msg(utils.cok(f"[tofu] Trusted new key for {uname} (first contact)."))
         elif not trusted:
+            self._tofu_mismatched.add(uname)
             utils.print_msg(utils.cerr(
-                f"[SECURITY WARNING] Key mismatch for {uname}! "
-                "Possible impersonation — check with peer out-of-band. "
-                "Private messages from this user will NOT be displayed."
+                f"[SECURITY WARNING] Key mismatch for {uname}!\n"
+                f"  Stored key : {self.tofu_store.get(uname, '(none)')[:24]}...\n"
+                f"  New key    : {vk_hex[:24]}...\n"
+                "  Their identity may have changed (e.g. they reinstalled NoEyes),\n"
+                "  or this could be an impersonation attempt.\n"
+                "  Messages from this user will be shown with a ⚠ marker.\n"
+                f"  If you trust them, type:  /trust {uname}"
             ))
 
     # ------------------------------------------------------------------
@@ -681,6 +690,11 @@ class NoEyesClient:
                     f"[SECURITY] Signature FAILED for message from {from_user} — displaying anyway."
                 ))
 
+            if from_user in self._tofu_mismatched:
+                utils.print_msg(utils.cwarn(
+                    f"⚠ Message from {from_user} — key mismatch (run /trust {from_user} if you trust them)."
+                ))
+
             # Animate text privmsgs: show encrypted payload → reveal plaintext
             utils.privmsg_decrypt_animation(
                 payload, text, from_user, msg_ts,
@@ -852,8 +866,8 @@ class NoEyesClient:
                 self._file_queue.pop(uname, None)
                 self._msg_queue.pop(uname, None)
         elif event == "nick":
-            old = header.get("old_nick", "?")
-            new = header.get("new_nick", "?")
+            old = header.get("old_nick", "?").lower()
+            new = header.get("new_nick", "?").lower()
             utils.log_and_print(self.room, utils.format_system(f"{old} is now known as {new}.", ts))
             # Move ALL pairwise state to new nick — including in-flight handshakes.
             # Without migrating _dh_pending, a dh_resp from the renamed user
@@ -866,6 +880,10 @@ class NoEyesClient:
                 self._msg_queue[new] = self._msg_queue.pop(old)
             if old in self._file_queue:
                 self._file_queue[new] = self._file_queue.pop(old)
+            # Also migrate mismatched-user tracking
+            if old in self._tofu_mismatched:
+                self._tofu_mismatched.discard(old)
+                self._tofu_mismatched.add(new)
         elif event == "rate_limit":
             utils.print_msg(utils.cwarn("[warn] You are sending messages too fast."))
         elif event == "nick_error":
@@ -934,9 +952,10 @@ class NoEyesClient:
             return
 
         if cmd == "/nick" and len(parts) >= 2:
-            new_nick = parts[1]
-            self._send( {"type": "command", "event": "nick",
-                                   "nick": new_nick})
+            new_nick = parts[1].strip().lower()[:32]
+            if not new_nick:
+                return
+            self._send({"type": "command", "event": "nick", "nick": new_nick})
             self.username = new_nick
             return
 
@@ -987,6 +1006,36 @@ class NoEyesClient:
             peer     = parts[1].lower()
             filepath = parts[2]
             self._send_file(peer, filepath)
+            return
+
+        if cmd == "/whoami":
+            # Show own username and key fingerprint for out-of-band verification
+            fingerprint = self.vk_bytes.hex()[:16] + "..."
+            utils.print_msg(utils.cinfo(
+                f"[whoami] You are '{self.username}'\n"
+                f"  Key fingerprint: {fingerprint}\n"
+                f"  Full verify key: {self.vk_bytes.hex()}"
+            ))
+            return
+
+        if cmd == "/trust" and len(parts) >= 2:
+            peer = parts[1].lower()
+            if peer == self.username:
+                utils.print_msg(utils.cwarn("[trust] Cannot /trust yourself."))
+                return
+            if peer not in self.tofu_store:
+                utils.print_msg(utils.cwarn(
+                    f"[trust] No stored key for '{peer}' — nothing to update."
+                ))
+                return
+            # Remove the stored key so the next pubkey_announce is trusted as fresh.
+            del self.tofu_store[peer]
+            id_mod.save_tofu(self.tofu_store, self.tofu_path)
+            self._tofu_mismatched.discard(peer)
+            utils.print_msg(utils.cok(
+                f"[trust] Cleared stored key for '{peer}'.\n"
+                "  Their next key announcement will be trusted automatically."
+            ))
             return
 
         utils.print_msg(utils.cwarn(f"[warn] Unknown command: {cmd}. Type /help for help."))
@@ -1120,11 +1169,15 @@ Commands:
   /quit                Disconnect and exit cleanly.
   /clear               Clear screen.
   /users               List users in the current room.
-  /nick <n>            Change your username.
+  /nick <name>         Change your username.
   /join <room>         Switch to a room (creates it if needed).
   /leave               Leave current room and return to general.
   /msg <user> <text>   Encrypted private message (auto-DH on first use).
   /send <user> <file>  Send a file (encrypted, requires established DH).
   /anim <on|off>       Toggle the decrypt animation for incoming messages.
+  /whoami              Show your username and key fingerprint.
+  /trust <user>        Clear stored key for a user after they regenerated their
+                       identity (e.g. reinstalled NoEyes), so the next key
+                       announcement is trusted automatically.
 """
         utils.print_msg(utils.cinfo(help_text))

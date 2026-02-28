@@ -189,8 +189,20 @@ def load_identity(path: str) -> tuple[bytes, bytes]:
                         print("[identity] Wrong password — exiting.")
                         sys.exit(1)
         else:
-            # Plain-text identity (no password was set on creation)
+            # Plain-text identity (no password was set on creation).
+            # Offer a one-time migration to password-protected if we have a TTY.
+            import sys as _sys
             sk_bytes = bytes.fromhex(data["sk_hex"])
+            if _sys.stdin.isatty():
+                print(
+                    "\n[identity] Your identity file is not password-protected.\n"
+                    "  Add a password now to encrypt it (recommended),\n"
+                    "  or press Enter to keep it as plain text."
+                )
+                id_pass = _prompt_identity_password(confirm=True)
+                if id_pass:
+                    _save_identity_with_password(path, sk_bytes, id_pass)
+                    print("[identity] Identity file is now encrypted.")
             return sk_bytes, vk_bytes
 
     # ── First run ──────────────────────────────────────────────────────────
