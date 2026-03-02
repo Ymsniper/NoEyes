@@ -89,6 +89,7 @@ def print_banner() -> None:
 
 _OUTPUT_LOCK    = threading.Lock()
 _g_buf          : list = []
+_g_cur          : int  = 0    # cursor position within _g_buf (0 = start)
 _g_input_active : bool = False
 _room_logs      : dict = defaultdict(list)   # room -> [rendered_string, ...]
 _room_seen      : dict = defaultdict(set)    # room -> set of "ts|user|text" keys already animated
@@ -119,12 +120,18 @@ def _get_tw() -> int:
 
 
 def _erase_input_unsafe() -> None:
-    """Erase partial input from screen. Caller must hold _OUTPUT_LOCK."""
+    """
+    Erase partial input from screen. Caller must hold _OUTPUT_LOCK.
+
+    Cursor may be anywhere within _g_buf (left/right arrows move it).
+    We need to move UP to the start row of the input, then clear down.
+    The cursor is at column (_g_cur % tw) on row (_g_cur // tw) of the
+    input area, so we go up that many rows to reach the input start row.
+    """
     if not _g_input_active or not _g_buf:
         return
-    tw       = _get_tw()
-    n        = len(_g_buf)
-    rows_up  = n // tw          # floor: after n chars from col 0, cursor is on row n//tw
+    tw      = _get_tw()
+    rows_up = _g_cur // tw      # rows above cursor to reach start of input
     if rows_up:
         sys.stdout.write("\033[" + str(rows_up) + "A")
     sys.stdout.write("\r\033[J")
@@ -132,10 +139,20 @@ def _erase_input_unsafe() -> None:
 
 
 def _redraw_input_unsafe() -> None:
-    """Redraw partial input. Caller must hold _OUTPUT_LOCK."""
-    if not _g_input_active or not _g_buf:
+    """
+    Redraw partial input with cursor at _g_cur. Caller must hold _OUTPUT_LOCK.
+
+    Prints the entire buffer then moves the cursor left by however many
+    characters trail after the cursor position.
+    """
+    if not _g_input_active:
+        return
+    if not _g_buf:
         return
     sys.stdout.write("".join(_g_buf))
+    trail = len(_g_buf) - _g_cur
+    if trail > 0:
+        sys.stdout.write(f"\033[{trail}D")
     sys.stdout.flush()
 
 
@@ -365,15 +382,25 @@ def privmsg_decrypt_animation(
 
 def read_line_noecho() -> str:
     """
-    Read a line with manual echo. Characters go into _g_buf so print_msg()
-    can erase/redraw them around incoming messages.
-    Falls back to plain input() when stdin is not a TTY.
+    Read a line with manual echo and left/right cursor movement.
+
+    Characters go into _g_buf (cursor tracked by _g_cur) so print_msg()
+    can erase/redraw them cleanly around incoming messages.
+
+    Keys:
+      Printable       inserted at cursor position
+      Backspace/Del   delete char left of cursor
+      Left/Right      move cursor (CSI ESC[D/C or SS3 ESC OD/OC)
+      Home/End        jump to start/end
+      Up/Down/scroll  consumed silently
+      Escape          trigger animation skip
+      Ctrl+C/D        raise KeyboardInterrupt/EOFError
     """
-    global _g_input_active, _g_buf
+    global _g_input_active, _g_buf, _g_cur
 
     if not sys.stdin.isatty():
         line = sys.stdin.readline()
-        if line == "":          # real EOF
+        if line == "":
             raise EOFError
         return line.rstrip("\n")
 
@@ -385,28 +412,20 @@ def read_line_noecho() -> str:
 
     with _OUTPUT_LOCK:
         _g_buf          = []
+        _g_cur          = 0
         _g_input_active = True
 
     import os as _os, select as _sel
 
-    def _readbyte() -> str:
-        """
-        Read exactly one byte directly from the raw file descriptor,
-        bypassing Python's internal stdio buffer entirely.
-
-        WHY NOT sys.stdin.read(1):
-          sys.stdin is a buffered TextIOWrapper.  When you call read(1),
-          Python may pull multiple bytes from the kernel into its own
-          internal buffer in one syscall.  A subsequent select() on the
-          same fd then returns False — the bytes are gone from the kernel
-          but haven't been returned yet — so the escape-sequence detector
-          thinks it got a lone ESC and lets the '[' and 'D' through as
-          printable characters, printing '[D' on the screen.
-
-          os.read(fd, 1) reads exactly one byte at the OS level every time,
-          keeping Python's buffer empty and making select() reliable.
-        """
+    def _readbyte():
         return _os.read(fd, 1).decode("utf-8", errors="replace")
+
+    def _inline_redraw():
+        """Redraw tail from cursor to end, then reposition. Caller holds lock."""
+        tail = "".join(_g_buf[_g_cur:])
+        sys.stdout.write(tail + " ")          # trailing space erases leftover on delete
+        sys.stdout.write(f"\033[{len(tail)+1}D")  # move cursor back
+        sys.stdout.flush()
 
     try:
         tty.setcbreak(fd)
@@ -419,92 +438,89 @@ def read_line_noecho() -> str:
                     _erase_input_unsafe()
                     _g_input_active = False
                     _g_buf          = []
+                    _g_cur          = 0
                 break
 
             elif ch == "\x03":
                 with _OUTPUT_LOCK:
                     _g_input_active = False
-                    _g_buf          = []
+                    _g_buf = []; _g_cur = 0
                 raise KeyboardInterrupt
 
             elif ch == "\x04":
                 with _OUTPUT_LOCK:
                     _g_input_active = False
-                    _g_buf          = []
+                    _g_buf = []; _g_cur = 0
                 raise EOFError
 
             elif ch in ("\x7f", "\x08"):
                 with _OUTPUT_LOCK:
-                    if _g_buf:
-                        _g_buf.pop()
-                        sys.stdout.write("\b \b")
-                        sys.stdout.flush()
+                    if _g_cur > 0:
+                        _g_buf.pop(_g_cur - 1)
+                        _g_cur -= 1
+                        sys.stdout.write("\033[D")   # move cursor left
+                        _inline_redraw()
 
             elif ch == "\x1b":
-                # Escape sequence detector.
-                #
-                # Terminals send multi-byte sequences for special keys:
-                #
-                #   CSI mode (most common):  ESC [ <params> <final>
-                #     e.g. arrow up   = ESC [ A
-                #          shift-up   = ESC [ 1 ; 2 A
-                #          F1         = ESC [ 1 1 ~
-                #
-                #   SS3 mode (xterm application-cursor mode, used by
-                #   many terminals including Konsole for scroll events):
-                #     e.g. arrow up   = ESC O A
-                #          arrow down = ESC O B
-                #          scroll up  = ESC O A  (sent as mouse wheel)
-                #
-                #   Mouse events (SGR/X10): ESC [ M ... or ESC [ < ...
-                #     These are variable length — read until we hit a
-                #     terminating letter (M or m for SGR).
-                #
-                # We consume ALL of these silently so nothing leaks into
-                # _g_buf and prints as raw escape bytes on screen.
-                #
-                # select() is reliable because _readbyte() uses os.read()
-                # and never pre-fetches into Python's stdio buffer.
                 r, _, _ = _sel.select([fd], [], [], 0.05)
                 if not r:
-                    # Lone Escape — skip ongoing animations
                     trigger_skip_animation()
                     continue
                 nxt = _readbyte()
-                if nxt == "[":
-                    # CSI sequence — read until alphabetic terminator or ~
-                    while True:
-                        r2, _, _ = _sel.select([fd], [], [], 0.05)
-                        if not r2:
-                            break
-                        b = _readbyte()
-                        if b.isalpha() or b == "~":
-                            break
-                elif nxt == "O":
-                    # SS3 sequence — always exactly one more byte (the key)
+                if nxt in ("[", "O"):
                     r2, _, _ = _sel.select([fd], [], [], 0.05)
-                    if r2:
-                        _readbyte()  # consume the final byte (A/B/C/D etc.)
-                # else: unknown ESC sequence — nxt already consumed, ignore
+                    if not r2:
+                        continue
+                    fin = _readbyte()
+                    with _OUTPUT_LOCK:
+                        if fin == "D":                # Left
+                            if _g_cur > 0:
+                                _g_cur -= 1
+                                sys.stdout.write("\033[D")
+                                sys.stdout.flush()
+                        elif fin == "C":              # Right
+                            if _g_cur < len(_g_buf):
+                                _g_cur += 1
+                                sys.stdout.write("\033[C")
+                                sys.stdout.flush()
+                        elif fin == "H":              # Home
+                            if _g_cur > 0:
+                                sys.stdout.write(f"\033[{_g_cur}D")
+                                _g_cur = 0
+                                sys.stdout.flush()
+                        elif fin == "F":              # End
+                            trail = len(_g_buf) - _g_cur
+                            if trail > 0:
+                                sys.stdout.write(f"\033[{trail}C")
+                                _g_cur = len(_g_buf)
+                                sys.stdout.flush()
+                        elif not (fin.isalpha() or fin == "~"):
+                            # Extended sequence — drain until terminator
+                            while True:
+                                r3, _, _ = _sel.select([fd], [], [], 0.05)
+                                if not r3: break
+                                b = _readbyte()
+                                if b.isalpha() or b == "~": break
+                        # Up/Down/F-keys — fin consumed, ignore
 
             elif ch >= " ":
                 with _OUTPUT_LOCK:
-                    _g_buf.append(ch)
-                    sys.stdout.write(ch)
-                    sys.stdout.flush()
+                    _g_buf.insert(_g_cur, ch)
+                    _g_cur += 1
+                    if _g_cur == len(_g_buf):
+                        sys.stdout.write(ch)
+                        sys.stdout.flush()
+                    else:
+                        sys.stdout.write(ch)
+                        _inline_redraw()
 
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         with _OUTPUT_LOCK:
             _g_input_active = False
-            _g_buf          = []
+            _g_buf = []; _g_cur = 0
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# Format helpers
-# ---------------------------------------------------------------------------
 
 def format_message(username: str, text: str, timestamp: str) -> str:
     ts  = cgrey(f"[{timestamp}]")

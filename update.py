@@ -38,6 +38,7 @@ TOOL_FILES = [
     "identity.py",
     "utils.py",
     "config.py",
+    "launch.py",
     "selftest.py",
     "update.py",
     "README.md",

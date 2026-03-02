@@ -401,7 +401,8 @@ def server_flow(deps: dict):
             return
 
     print()
-    port = input_line(f"  {bo('Port')}", "5000")
+    env_port = os.environ.get("NOEYES_PORT", "")
+    port = input_line(f"  {bo('Port')}", env_port or "5000")
     try:
         port = int(port)
     except ValueError:
@@ -450,48 +451,76 @@ def server_flow(deps: dict):
 # ── Client connection flow ────────────────────────────────────────────────────
 
 def client_flow():
-    clear()
-    print(LOGO)
-    print(box("Connect to Server", [
-        "You need:",
-        "",
-        gy("  1. The server's IP address or hostname"),
-        gy("  2. The port number"),
-        gy("  3. The shared key file (.key)"),
-        "",
-        "Ask the server host to share these with you.",
-    ], colour=bl))
-    print()
+    """
+    Interactive connect flow.
 
-    host = input_line(f"  {bo('Server address')}", "")
+    Environment variable shortcuts (used by demo scripts and power users
+    running multiple clients on the same machine — beginners never see them):
+
+      NOEYES_HOST          pre-fill server address    (skips host prompt)
+      NOEYES_PORT          pre-fill port              (skips port prompt)
+      NOEYES_USERNAME      pre-fill username          (skips username prompt)
+      NOEYES_KEY_FILE      path to key file           (skips key detection)
+      NOEYES_IDENTITY_PATH identity keypair path
+      NOEYES_TOFU_PATH     TOFU store path
+      NOEYES_NO_TLS        disable TLS
+
+    If ALL required vars (HOST, PORT, USERNAME, KEY_FILE) are set, the flow
+    skips all prompts and connects immediately.
+    """
+    # Read env var overrides
+    env_host     = os.environ.get("NOEYES_HOST", "")
+    env_port     = os.environ.get("NOEYES_PORT", "")
+    env_username = os.environ.get("NOEYES_USERNAME", "")
+    env_keyfile  = os.environ.get("NOEYES_KEY_FILE", "")
+
+    autoconnect = all([env_host, env_port, env_username, env_keyfile])
+
+    if not autoconnect:
+        clear()
+        print(LOGO)
+        print(box("Connect to Server", [
+            "You need:",
+            "",
+            gy("  1. The server's IP address or hostname"),
+            gy("  2. The port number"),
+            gy("  3. The shared key file (.key)"),
+            "",
+            "Ask the server host to share these with you.",
+        ], colour=bl))
+        print()
+
+    host = env_host or input_line(f"  {bo('Server address')}", "")
     if not host:
         print(f"\n  {rd('✘')} No address entered. Cancelled.")
         input(f"\n  {gy('Press Enter to go back...')}")
         return
 
-    port = input_line(f"  {bo('Port')}", "5000")
     try:
-        port = int(port)
+        port = int(env_port or input_line(f"  {bo('Port')}", "5000"))
     except ValueError:
         port = 5000
 
-    username = input_line(f"  {bo('Your username')}", "")
+    username = env_username or input_line(f"  {bo('Your username')}", "")
 
     # Key file
-    keys = find_key_files()
-    if keys:
-        print(f"\n  {gy('Key files found:')}")
-        for i, k in enumerate(keys):
-            print(f"    {cy(str(i+1))}  {k}")
-        choice = input_line(f"  {bo('Choose key file (number or path)')}", "1")
-        try:
-            idx = int(choice) - 1
-            key_path = keys[idx] if 0 <= idx < len(keys) else choice
-        except ValueError:
-            key_path = choice
+    if env_keyfile:
+        key_path = env_keyfile
     else:
-        print(f"\n  {yl('No key file found in current directory.')}")
-        key_path = input_line(f"  {bo('Path to key file')}", "./chat.key")
+        keys = find_key_files()
+        if keys:
+            print(f"\n  {gy('Key files found:')}")
+            for i, k in enumerate(keys):
+                print(f"    {cy(str(i+1))}  {k}")
+            choice = input_line(f"  {bo('Choose key file (number or path)')}", "1")
+            try:
+                idx = int(choice) - 1
+                key_path = keys[idx] if 0 <= idx < len(keys) else choice
+            except ValueError:
+                key_path = choice
+        else:
+            print(f"\n  {yl('No key file found in current directory.')}")
+            key_path = input_line(f"  {bo('Path to key file')}", "./chat.key")
 
     if not Path(key_path).exists():
         print(f"\n  {rd('✘')} Key file not found: {key_path}")
@@ -518,11 +547,6 @@ def client_flow():
            "--port", str(port), "--key-file", key_path]
     if username:
         cmd += ["--username", username]
-
-    # Env var overrides for identity/TOFU paths (used by demo scripts and
-    # power users running multiple clients on the same machine).
-    # NOEYES_IDENTITY_PATH and NOEYES_TOFU_PATH are picked up silently —
-    # beginners never see them; the demo sets them per-pane before launch.
     if os.environ.get("NOEYES_IDENTITY_PATH"):
         cmd += ["--identity-path", os.environ["NOEYES_IDENTITY_PATH"]]
     if os.environ.get("NOEYES_TOFU_PATH"):
