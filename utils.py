@@ -91,6 +91,7 @@ _OUTPUT_LOCK    = threading.Lock()
 _g_buf          : list = []
 _g_cur          : int  = 0    # cursor position within _g_buf (0 = start)
 _g_input_active : bool = False
+_g_header       : str  = ""   # sticky header shown at top of screen
 _room_logs      : dict = defaultdict(list)   # room -> [rendered_string, ...]
 _room_seen      : dict = defaultdict(set)    # room -> set of "ts|user|text" keys already animated
 _current_room   : list = ["general"]         # mutable single-element so closures can mutate it
@@ -156,6 +157,18 @@ def _redraw_input_unsafe() -> None:
     sys.stdout.flush()
 
 
+def _redraw_header_unsafe() -> None:
+    """Re-stamp the sticky header at row 1. Caller holds _OUTPUT_LOCK."""
+    if not _g_header or not _is_tty():
+        return
+    try:
+        rows = os.get_terminal_size().lines
+    except OSError:
+        rows = 24
+    sys.stdout.write(f"[s[1;1H[2K{_g_header}[2;{rows}r[u")
+    sys.stdout.flush()
+
+
 def print_msg(text: str) -> None:
     """Print a line of output, cleanly interleaving with in-progress input."""
     if not _is_tty():
@@ -189,22 +202,37 @@ def mark_seen(room: str, from_user: str, ts: str, text: str) -> None:
 
 def switch_room_display(room_name: str, show_banner: bool = False) -> None:
     """
-    Clear the terminal and show the room header.
-    The server will replay history (with animation) right after this call,
-    so we just clear the screen — no local log reprint needed.
-    Holds _OUTPUT_LOCK throughout so nothing prints between clear and header.
+    Clear the terminal, pin a sticky header at row 1 showing the room name,
+    and set the scroll region to rows 2..N so messages scroll under it.
+
+    The room name stays visible even after hundreds of messages scroll past.
     """
+    global _g_header
     _current_room[0] = room_name
     _room_logs[room_name].clear()   # server replay will refill it
     with _OUTPUT_LOCK:
         _erase_input_unsafe()
         if _is_tty():
-            sys.stdout.write("\033[2J\033[H")
+            try:
+                rows = os.get_terminal_size().lines
+            except OSError:
+                rows = 24
+            # Build sticky header
+            _g_header = colorize(f"  ══  {room_name}  ══", CYAN, bold=True)
+            # Clear screen
+            sys.stdout.write("[2J[H")
             sys.stdout.flush()
-        if show_banner:
-            print(colorize(BANNER, CYAN, bold=True))
-        print(colorize(f"  ══  {room_name}  ══", CYAN, bold=True))
-        print()
+            if show_banner:
+                print(colorize(BANNER, CYAN, bold=True))
+            # Print header at row 1, then set scroll region from row 2 down
+            sys.stdout.write(f"[1;1H[2K{_g_header}")
+            sys.stdout.write(f"[2;{rows}r")   # scroll region = row 2..rows
+            sys.stdout.write("[2;1H")          # move cursor into scroll region
+            sys.stdout.flush()
+        else:
+            _g_header = ""
+            print(colorize(f"  ══  {room_name}  ══", CYAN, bold=True))
+            print()
         _redraw_input_unsafe()
 
 
@@ -494,6 +522,19 @@ def read_line_noecho() -> str:
                                 sys.stdout.write(f"\033[{trail}C")
                                 _g_cur = len(_g_buf)
                                 sys.stdout.flush()
+                        elif fin == "5":        # PageUp = ESC[5~
+                            r3,_,_ = _sel.select([fd],[],[],0.05)
+                            if r3: _readbyte()  # consume trailing ~
+                            _erase_input_unsafe()
+                            room = _current_room[0]
+                            log  = _room_logs.get(room, [])
+                            if log:
+                                lines = log[-30:]
+                                sys.stdout.write(colorize(f"\n  \u2500\u2500 last {len(lines)} of {len(log)} messages \u2500\u2500\n","\033[90m"))
+                                for ln in lines: print(ln)
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                            _redraw_input_unsafe()
                         elif not (fin.isalpha() or fin == "~"):
                             # Extended sequence — drain until terminator
                             while True:

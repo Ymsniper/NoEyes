@@ -408,8 +408,9 @@ def server_flow(deps: dict):
     except ValueError:
         port = 5000
 
-    use_bore = True
-    if deps["bore"]:
+    if os.environ.get("NOEYES_NO_BORE"):
+        use_bore = False
+    elif deps["bore"]:
         print(f"\n  {gy('bore is installed — the server can be reached from anywhere.')}")
         use_bore = confirm(f"  {bo('Enable bore tunnel?')} (allows internet access)", True)
     else:
