@@ -165,7 +165,8 @@ class NoEyesClient:
         tofu_path: str     = "~/.noeyes/tofu_pubkeys.json",
         reconnect: bool    = True,
         tls: bool          = False,
-        tls_cert: str      = "",   # path to CA cert for server verification (optional)
+        tls_cert: str      = "",        # path to CA cert (manual override)
+        tls_tofu_path: str = "~/.noeyes/tls_fingerprints.json",
     ):
         self.host          = host
         self.port          = port
@@ -181,7 +182,8 @@ class NoEyesClient:
         self.tofu_path     = tofu_path
         self.reconnect     = reconnect
         self._tls          = tls
-        self._tls_cert     = tls_cert   # CA cert path, empty = system CAs
+        self._tls_cert     = tls_cert       # CA cert path, empty = TOFU mode
+        self._tls_tofu_path = tls_tofu_path
 
         # Load / generate Ed25519 identity
         self.sk_bytes, self.vk_bytes = enc.load_identity(identity_path)
@@ -228,21 +230,82 @@ class NoEyesClient:
     # ------------------------------------------------------------------
 
     def connect(self) -> bool:
-        """Open TCP socket to the server (with optional TLS). Returns True on success."""
+        """
+        Open TCP socket to the server, with automatic TLS + TOFU fingerprint
+        verification.
+
+        TLS mode (default):
+          1. Connect with TLS but no CA verification (self-signed cert is fine).
+          2. Extract the server's cert fingerprint from the live TLS session.
+          3. Look up the fingerprint in the TOFU store (~/.noeyes/tls_fingerprints.json).
+             - First connection to this host:port → trust and store the fingerprint.
+             - Known host, matching fingerprint → connect silently.
+             - Known host, DIFFERENT fingerprint → warn user (possible MITM).
+          4. The connection is always TLS-encrypted regardless of TOFU outcome.
+             The warning means the server's certificate changed unexpectedly.
+
+        No-TLS mode (--no-tls):
+          Plain TCP. Messages are still E2E encrypted but metadata (usernames,
+          room names, timestamps) is visible to anyone watching the wire.
+        """
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((self.host, self.port))
             if self._tls:
                 import ssl as _ssl
-                ctx = _ssl.create_default_context()
+                import binascii
+
+                # Connect with TLS but skip CA verification — we do our own
+                # TOFU verification on the raw fingerprint instead.
+                ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode    = _ssl.CERT_NONE
+
                 if self._tls_cert:
-                    # Caller supplied a specific CA cert (self-signed server)
+                    # Manual CA cert override — use proper verification
+                    ctx.verify_mode = _ssl.CERT_REQUIRED
                     ctx.load_verify_locations(self._tls_cert)
-                # Wrap the raw socket; server_hostname enables SNI + cert check
+                    ctx.check_hostname = True
+
                 s = ctx.wrap_socket(s, server_hostname=self.host)
-                utils.print_msg(utils.cok(
-                    f"[tls] Connection to {self.host}:{self.port} is TLS-encrypted."
-                ))
+
+                # Extract fingerprint from the live TLS session
+                der  = s.getpeercert(binary_form=True)
+                if der:
+                    import hashlib
+                    fp = hashlib.sha256(der).hexdigest()
+                    key = f"{self.host}:{self.port}"
+
+                    # Load TOFU store and verify / register the fingerprint
+                    store = enc.load_tls_tofu(self._tls_tofu_path)
+                    if key not in store:
+                        # First contact — trust and store
+                        store[key] = fp
+                        enc.save_tls_tofu(store, self._tls_tofu_path)
+                        utils.print_msg(utils.cok(
+                            f"[tls] New server fingerprint trusted (first contact):\n"
+                            f"      {fp[:16]}...{fp[-16:]}"
+                        ))
+                    elif store[key] != fp:
+                        # Fingerprint changed — warn loudly (possible MITM)
+                        utils.print_msg(utils.cerr(
+                            f"[TLS WARNING] Server certificate changed for {key}!\n"
+                            f"  Stored : {store[key][:16]}...{store[key][-16:]}\n"
+                            f"  New    : {fp[:16]}...{fp[-16:]}\n"
+                            f"  This could be a server reinstall OR a man-in-the-middle attack.\n"
+                            f"  If you trust the new cert, delete the entry from:\n"
+                            f"    {self._tls_tofu_path}\n"
+                            f"  And reconnect."
+                        ))
+                        # Still connected — user can decide. Don't drop the connection
+                        # automatically (would break reconnect flows). The warning
+                        # is prominent enough for the user to act.
+                    else:
+                        # Known fingerprint — silently good
+                        utils.print_msg(utils.cok(
+                            f"[tls] Encrypted  ·  {fp[:8]}...{fp[-8:]}"
+                        ))
+
             self.sock = s
             return True
         except OSError as e:

@@ -77,11 +77,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="Username (skips interactive prompt if set).")
     p.add_argument("--config",    default=None, metavar="PATH",
                    help="JSON config file path.")
+    p.add_argument("--identity-path", default=None, metavar="PATH",
+                   help="Path to identity key file (default: ~/.noeyes/identity.key).")
+    p.add_argument("--tofu-path", default=None, metavar="PATH",
+                   help="Path to TOFU pubkey store (default: ~/.noeyes/tofu_pubkeys.json).")
 
     # TLS (optional, as before)
-    p.add_argument("--tls",      action="store_true", help="Enable TLS.")
-    p.add_argument("--cert",     default=None, metavar="PATH", help="TLS certificate.")
-    p.add_argument("--tls-key",  default=None, metavar="PATH", help="TLS private key.")
+    p.add_argument("--no-tls",   action="store_true",
+                       help="Disable TLS (not recommended — exposes metadata).")
+    p.add_argument("--cert",     default=None, metavar="PATH",
+                       help="Override TLS cert path (default: ~/.noeyes/server.crt).")
+    p.add_argument("--tls-key",  default=None, metavar="PATH",
+                       help="Override TLS key path (default: ~/.noeyes/server.key).")
 
     # Server-only
     p.add_argument("--daemon",   action="store_true",
@@ -160,7 +167,7 @@ def load_config(argv: list[str] | None = None) -> dict[str, Any]:
         "colors_enabled":      jcfg.get("colors_enabled",      True),
 
         # TLS
-        "tls":      args.tls,
+        "no_tls":   args.no_tls,
         "cert":     _get("cert",     "cert",     None),
         "tls_key":  _get("tls_key",  "tls_key",  None),
 
@@ -173,8 +180,8 @@ def load_config(argv: list[str] | None = None) -> dict[str, Any]:
         "no_bore":  args.no_bore,
 
         # Identity paths (not exposed as CLI flags; change via JSON config)
-        "identity_path": jcfg.get("identity_path", DEFAULT_IDENTITY_PATH),
-        "tofu_path":     jcfg.get("tofu_path",     DEFAULT_TOFU_PATH),
+        "identity_path": _get("identity_path", "identity_path", DEFAULT_IDENTITY_PATH),
+        "tofu_path":     _get("tofu_path", "tofu_path", DEFAULT_TOFU_PATH),
     }
 
     return cfg
