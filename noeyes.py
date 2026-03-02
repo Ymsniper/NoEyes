@@ -120,6 +120,7 @@ def run_server(cfg: dict) -> None:
         rate_limit_per_minute=cfg["rate_limit_per_minute"],
         ssl_cert=cfg.get("cert") or "",
         ssl_key=cfg.get("tls_key") or "",
+        no_tls=cfg.get("no_tls", False),
     )
 
     if cfg.get("daemon"):
@@ -139,11 +140,40 @@ def run_server(cfg: dict) -> None:
     server.run()
 
 
+TLS_TOFU_PATH = "~/.noeyes/tls_fingerprints.json"
+
+
+def _resolve_tls_for_client(host: str, port: int, no_tls: bool) -> tuple:
+    """
+    Resolve TLS settings for a client connection.
+
+    Returns (tls: bool, tls_cert: str) where tls_cert is a path to the
+    server's cert if we have it cached, or empty string to use TOFU mode.
+
+    How it works:
+      1. Client connects with TLS but without certificate verification
+         (check_hostname=False, verify_mode=CERT_NONE).
+      2. After the handshake, it reads the server's cert fingerprint.
+      3. On first connection: stores the fingerprint and trusts it.
+      4. On subsequent connections: verifies the fingerprint matches.
+      5. If fingerprint changed: warns the user (possible MITM).
+
+    This mirrors SSH host-key verification — transport is always encrypted,
+    and the server's identity is pinned after first contact.
+    """
+    if no_tls:
+        return False, ""
+    return True, ""   # tls=True, cert="" → client uses TOFU mode
+
+
 def run_client(cfg: dict) -> None:
     from client import NoEyesClient
 
     group_fernet = _resolve_fernet(cfg)
     username     = _get_username(cfg)
+
+    no_tls = cfg.get("no_tls", False)
+    tls, tls_cert = _resolve_tls_for_client(cfg["connect"], cfg["port"], no_tls)
 
     client = NoEyesClient(
         host=cfg["connect"],
@@ -153,6 +183,9 @@ def run_client(cfg: dict) -> None:
         room=cfg["room"],
         identity_path=cfg["identity_path"],
         tofu_path=cfg["tofu_path"],
+        tls=tls,
+        tls_cert=tls_cert,
+        tls_tofu_path=TLS_TOFU_PATH,
     )
     client.run()
 

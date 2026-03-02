@@ -249,6 +249,7 @@ class NoEyesServer:
         heartbeat_interval:   int = 20,
         ssl_cert:             str = "",
         ssl_key:              str = "",
+        no_tls:               bool = False,
     ):
         self.host               = host
         self.port               = port
@@ -257,6 +258,7 @@ class NoEyesServer:
         self.heartbeat_interval = heartbeat_interval
         self.ssl_cert           = ssl_cert
         self.ssl_key            = ssl_key
+        self.no_tls             = no_tls
 
         # username → ClientConn
         self._clients: dict[str, ClientConn] = {}
@@ -286,21 +288,42 @@ class NoEyesServer:
             print("\n[server] Shutting down.")
 
     async def _main(self) -> None:
-        # Build TLS context if cert + key were supplied (--tls flag).
-        # Previously --tls was parsed but never used (dead code — vuln patched).
+        import ssl as _ssl
+        import encryption as _enc
+
+        # ── Auto-TLS ──────────────────────────────────────────────────────────
+        # NoEyes always uses TLS to protect transport metadata (usernames, room
+        # names, timestamps, frame sizes).  A self-signed cert is auto-generated
+        # on first run and reused on every subsequent start.
+        #
+        # Clients verify the cert via TOFU on the SHA-256 fingerprint — same
+        # model as SSH.  First connection trusts the cert; any later change
+        # triggers a warning so MITM attacks are detected.
+        #
+        # Manual cert override: pass --cert and --tls-key to use your own cert
+        # (e.g. a Let's Encrypt cert for a production server with a domain).
+        # Pass --no-tls to disable TLS entirely (LAN-only, not recommended).
         ssl_ctx = None
-        if self.ssl_cert and self.ssl_key:
-            import ssl as _ssl
+        if not self.no_tls:
+            # Resolve cert/key paths — use override if supplied, else auto paths
+            cert_path = self.ssl_cert or "~/.noeyes/server.crt"
+            key_path  = self.ssl_key  or "~/.noeyes/server.key"
+            from pathlib import Path as _Path
+            if not _Path(cert_path).expanduser().exists():
+                print("[server] Generating self-signed TLS certificate...")
+                _enc.generate_tls_cert(cert_path, key_path)
+                fp = _enc.get_tls_fingerprint(cert_path)
+                print(f"[server] Certificate generated.")
+                print(f"[server] Fingerprint: {fp[:16]}...{fp[-16:]}")
             ssl_ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
             try:
-                ssl_ctx.load_cert_chain(self.ssl_cert, self.ssl_key)
-                print(f"[server] TLS enabled — cert: {self.ssl_cert}")
+                ssl_ctx.load_cert_chain(
+                    _Path(cert_path).expanduser(),
+                    _Path(key_path).expanduser(),
+                )
             except Exception as e:
-                print(f"[server] TLS setup failed: {e} — falling back (messages remain E2E encrypted regardless)")
+                print(f"[server] TLS setup failed: {e} — falling back to no TLS.")
                 ssl_ctx = None
-        elif self.ssl_cert or self.ssl_key:
-            print("[server] WARNING: --tls requires both --cert and --tls-key; "
-                  "running without TLS.")
 
         server = await asyncio.start_server(
             self._handle_client,
@@ -311,10 +334,15 @@ class NoEyesServer:
         )
         async with server:
             addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
-            proto = "TLS" if ssl_ctx else "transport unencrypted — messages are E2E encrypted regardless"
+            if ssl_ctx:
+                import encryption as _enc2
+                cert_path = self.ssl_cert or "~/.noeyes/server.crt"
+                fp = _enc2.get_tls_fingerprint(cert_path)
+                proto = f"TLS — fingerprint: {fp[:16]}...{fp[-16:]}"
+            else:
+                proto = "no TLS (--no-tls) — messages are E2E encrypted client-side"
             print(f"[server] Listening on {addrs} ({proto})")
             logger.info("NoEyes server listening on %s (%s)", addrs, proto)
-            # Start heartbeat as a background task
             asyncio.create_task(self._heartbeat_loop())
             await server.serve_forever()
 

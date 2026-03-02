@@ -189,20 +189,10 @@ def load_identity(path: str) -> tuple[bytes, bytes]:
                         print("[identity] Wrong password — exiting.")
                         sys.exit(1)
         else:
-            # Plain-text identity (no password was set on creation).
-            # Offer a one-time migration to password-protected if we have a TTY.
-            import sys as _sys
+            # Plain-text identity — load silently.
+            # Password protection is offered only on first-time creation.
+            # To add a password later: delete ~/.noeyes/identity.key and restart.
             sk_bytes = bytes.fromhex(data["sk_hex"])
-            if _sys.stdin.isatty():
-                print(
-                    "\n[identity] Your identity file is not password-protected.\n"
-                    "  Add a password now to encrypt it (recommended),\n"
-                    "  or press Enter to keep it as plain text."
-                )
-                id_pass = _prompt_identity_password(confirm=True)
-                if id_pass:
-                    _save_identity_with_password(path, sk_bytes, id_pass)
-                    print("[identity] Identity file is now encrypted.")
             return sk_bytes, vk_bytes
 
     # ── First run ──────────────────────────────────────────────────────────
@@ -341,3 +331,87 @@ def dh_derive_shared_fernet(my_priv_bytes: bytes, peer_pub_bytes: bytes) -> Fern
     ).derive(shared_secret)
     fernet_key = base64.urlsafe_b64encode(key_material)
     return Fernet(fernet_key)
+
+
+# ---------------------------------------------------------------------------
+# Auto-TLS: self-signed certificate generation
+# ---------------------------------------------------------------------------
+
+def generate_tls_cert(cert_path: str, key_path: str) -> None:
+    """
+    Generate a self-signed RSA certificate and private key for the server.
+
+    The cert is valid for 10 years and contains no meaningful identity —
+    it exists purely to encrypt the transport layer (TLS).  Client-side
+    trust is established via TOFU on the cert fingerprint (see
+    get_tls_fingerprint / load_tls_tofu / save_tls_tofu in this module).
+
+    Both files are written with mode 0o600 (owner-read-only).
+    """
+    from cryptography import x509 as _x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+    from cryptography.hazmat.primitives import serialization as _ser
+    import datetime
+
+    privkey = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    subject = issuer = _x509.Name([
+        _x509.NameAttribute(NameOID.COMMON_NAME, u"noeyes-server"),
+    ])
+    cert = (
+        _x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(privkey.public_key())
+        .serial_number(_x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow())
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
+        .add_extension(_x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(privkey, hashes.SHA256())
+    )
+
+    cert_p = Path(cert_path).expanduser()
+    key_p  = Path(key_path).expanduser()
+    cert_p.parent.mkdir(parents=True, exist_ok=True)
+
+    cert_p.write_bytes(cert.public_bytes(_ser.Encoding.PEM))
+    key_p.write_bytes(privkey.private_bytes(
+        _ser.Encoding.PEM,
+        _ser.PrivateFormat.TraditionalOpenSSL,
+        _ser.NoEncryption(),
+    ))
+    cert_p.chmod(0o600)
+    key_p.chmod(0o600)
+
+
+def get_tls_fingerprint(cert_path: str) -> str:
+    """
+    Return the SHA-256 fingerprint of a PEM certificate file as a hex string.
+    Used by clients for TOFU verification of the server's self-signed cert.
+    """
+    from cryptography import x509 as _x509
+    import binascii
+    pem  = Path(cert_path).expanduser().read_bytes()
+    cert = _x509.load_pem_x509_certificate(pem)
+    fp   = cert.fingerprint(hashes.SHA256())
+    return binascii.hexlify(fp).decode()
+
+
+def load_tls_tofu(tofu_path: str) -> dict:
+    """Load TLS cert fingerprint TOFU store ('host:port' -> fingerprint hex)."""
+    p = Path(tofu_path).expanduser()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_tls_tofu(store: dict, tofu_path: str) -> None:
+    """Persist TLS cert fingerprint TOFU store to disk."""
+    p = Path(tofu_path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(store, indent=2))
+    p.chmod(0o600)

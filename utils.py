@@ -441,13 +441,30 @@ def read_line_noecho() -> str:
                         sys.stdout.flush()
 
             elif ch == "\x1b":
-                # Escape sequence detector.  Arrow / function keys send a
-                # multi-byte CSI sequence: ESC [ <final-byte>
-                # e.g. up=ESC[A  down=ESC[B  right=ESC[C  left=ESC[D
-                # We consume the whole sequence so nothing leaks into _g_buf.
+                # Escape sequence detector.
                 #
-                # select() is reliable here because _readbyte() uses os.read()
-                # and never pre-fetches bytes into a Python-side buffer.
+                # Terminals send multi-byte sequences for special keys:
+                #
+                #   CSI mode (most common):  ESC [ <params> <final>
+                #     e.g. arrow up   = ESC [ A
+                #          shift-up   = ESC [ 1 ; 2 A
+                #          F1         = ESC [ 1 1 ~
+                #
+                #   SS3 mode (xterm application-cursor mode, used by
+                #   many terminals including Konsole for scroll events):
+                #     e.g. arrow up   = ESC O A
+                #          arrow down = ESC O B
+                #          scroll up  = ESC O A  (sent as mouse wheel)
+                #
+                #   Mouse events (SGR/X10): ESC [ M ... or ESC [ < ...
+                #     These are variable length — read until we hit a
+                #     terminating letter (M or m for SGR).
+                #
+                # We consume ALL of these silently so nothing leaks into
+                # _g_buf and prints as raw escape bytes on screen.
+                #
+                # select() is reliable because _readbyte() uses os.read()
+                # and never pre-fetches into Python's stdio buffer.
                 r, _, _ = _sel.select([fd], [], [], 0.05)
                 if not r:
                     # Lone Escape — skip ongoing animations
@@ -455,18 +472,20 @@ def read_line_noecho() -> str:
                     continue
                 nxt = _readbyte()
                 if nxt == "[":
-                    # CSI sequence — read until the terminating byte
-                    # (an alphabetic char or '~').  Handles plain arrows
-                    # (ESC[A…D), shifted/ctrl arrows (ESC[1;2A…), F-keys, etc.
+                    # CSI sequence — read until alphabetic terminator or ~
                     while True:
                         r2, _, _ = _sel.select([fd], [], [], 0.05)
                         if not r2:
                             break
                         b = _readbyte()
                         if b.isalpha() or b == "~":
-                            break   # final byte of sequence consumed
-                # else: other ESC sequence (e.g. ESC O A on some terminals) —
-                # nxt already consumed, nothing to do
+                            break
+                elif nxt == "O":
+                    # SS3 sequence — always exactly one more byte (the key)
+                    r2, _, _ = _sel.select([fd], [], [], 0.05)
+                    if r2:
+                        _readbyte()  # consume the final byte (A/B/C/D etc.)
+                # else: unknown ESC sequence — nxt already consumed, ignore
 
             elif ch >= " ":
                 with _OUTPUT_LOCK:
