@@ -2,7 +2,7 @@
 
 > **End-to-end encrypted group chat, private messages, and file transfer — right in your terminal. The server is a blind forwarder: it cannot read a single byte of your messages, even if fully compromised.**
 
-[![asciicast](https://asciinema.org/a/t57evI1ny4TFXu6b.svg)](https://asciinema.org/a/t57evI1ny4TFXu6b)
+[![asciicast](https://asciinema.org/a/2ZQ8Din25NjsE4u1.svg)](https://asciinema.org/a/2ZQ8Din25NjsE4u1)
 
 ---
 
