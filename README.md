@@ -22,8 +22,6 @@
 
 ---
 
----
-
 ## What is NoEyes?
 
 NoEyes is a Python terminal chat tool for small groups who need real privacy. Unlike every mainstream chat app, the server **never decrypts anything** — it only sees encrypted bytes and routing headers, then forwards them blindly. You generate the key, share it out-of-band, and the server learns nothing about your conversations.
@@ -45,6 +43,7 @@ NoEyes is a Python terminal chat tool for small groups who need real privacy. Un
 | **File transfer** | AES-256-GCM streaming — any size, low RAM usage |
 | **Ed25519 identity** | Auto-generated signing key — all private messages and files are signed |
 | **TOFU** | First-seen keys trusted; key mismatches trigger a visible security warning |
+| **Random PBKDF2 salt** | Each deployment gets a unique random salt — rainbow tables are useless |
 | **Guided launcher** | Arrow-key menu UI — no command-line experience needed |
 | **Auto dependency installer** | Detects your platform, installs what's missing, asks before changing anything |
 | **Self-updater** | One command to pull the latest version from GitHub |
@@ -98,6 +97,95 @@ python noeyes.py --connect SERVER_IP --port 5000 --username bob   --key-file ./c
 
 ---
 
+## Running on Termux (Android) — Step by Step
+
+This guide assumes a completely fresh Termux install with nothing pre-installed.
+
+### Step 1 — Install Termux
+
+Download Termux from **F-Droid** (recommended) or the Play Store.
+F-Droid link: https://f-droid.org/packages/com.termux/
+
+> The F-Droid version is more up to date and receives faster security patches.
+
+### Step 2 — Update Termux packages
+
+Open Termux and run:
+
+```bash
+pkg update && pkg upgrade -y
+```
+
+### Step 3 — Install Python
+
+```bash
+pkg install python -y
+```
+
+Verify it worked:
+
+```bash
+python --version
+```
+
+You should see `Python 3.11` or newer.
+
+### Step 4 — Install git (to download NoEyes)
+
+```bash
+pkg install git -y
+```
+
+### Step 5 — Clone NoEyes
+
+```bash
+git clone https://github.com/Ymsniper/NoEyes
+cd NoEyes
+```
+
+### Step 6 — Run the setup wizard
+
+```bash
+python setup.py
+```
+
+This checks for all dependencies and installs anything missing automatically.
+
+### Step 7 — Launch NoEyes
+
+```bash
+python launch.py
+```
+
+Use the arrow keys to navigate the menu. Choose **Start server** or **Connect to server**.
+
+---
+
+### Termux Tips
+
+**Keep the session alive** — Install tmux so NoEyes keeps running when you switch apps:
+```bash
+pkg install tmux -y
+tmux
+python launch.py
+# Press Volume Down + D to detach (keeps running in background)
+# tmux attach   to come back
+```
+
+**bore tunnel on Termux** — If you want others outside your network to connect:
+```bash
+pkg install rust -y       # installs cargo
+cargo install bore-cli    # builds bore (~5 min on device)
+```
+Then start NoEyes normally — it will use bore automatically.
+
+**Storage permissions** — If file transfer fails, grant storage access:
+```bash
+termux-setup-storage
+```
+
+---
+
 ## In-Chat Commands
 
 | Command | Description |
@@ -106,7 +194,7 @@ python noeyes.py --connect SERVER_IP --port 5000 --username bob   --key-file ./c
 | `/quit` | Disconnect and exit |
 | `/clear` | Clear screen |
 | `/users` | List users in current room |
-| `/nick <name>` | Change your display name |
+| `/nick <n>` | Change your display name |
 | `/join <room>` | Switch to a room (created automatically) |
 | `/leave` | Return to the general room |
 | `/msg <user> <text>` | Send an E2E-encrypted private message |
@@ -152,12 +240,28 @@ chat.key (shared secret)
 X25519 DH (per user pair, automatic on first /msg)
     alice_ephemeral + bob_ephemeral ──► shared_secret
                                               │
-                                         SHA-256
+                                         HKDF-SHA256
                                               │
                                        pairwise_key    (private messages)
                                               │
                                   HKDF(transfer_id) ──► aes_gcm_key   (files)
 ```
+
+### Passphrase → key derivation (when using --key PASSPHRASE)
+
+```
+passphrase + random_salt (32 bytes, os.urandom)
+    │
+    └─ PBKDF2-HMAC-SHA256 (390,000 iterations)
+              │
+         derived_key  ──► saved to ~/.noeyes/derived.key
+                                      │
+                          loaded directly on every subsequent run
+                          (no PBKDF2 re-derivation, no static salt)
+```
+
+Every deployment gets a unique random salt — precomputed rainbow tables
+are useless. After the first run, share the **key file**, not the passphrase.
 
 ---
 
@@ -169,8 +273,12 @@ X25519 DH (per user pair, automatic on first /msg)
 | Private messages | Fernet with X25519 pairwise key | Ed25519 signed, TOFU verified |
 | File transfer | AES-256-GCM | Per-transfer key, Ed25519 signed |
 | Identity | Ed25519 keypair | Auto-generated at `~/.noeyes/identity.key` |
+| Key derivation | PBKDF2-HMAC-SHA256 + random salt | Unique salt per deployment — no rainbow tables |
 | Server | Blind forwarder | Zero decryption — server never holds any keys |
 | Room isolation | `HKDF(master_key, room_name)` | Cryptographically isolated |
+| Transport | TLS (on by default) | TOFU cert pinning — MITM triggers visible warning |
+| Replay protection | Per-room message ID deque | Replayed frames silently dropped |
+| Rate limiting | Separate chat / control buckets | DH flood cannot exhaust chat quota |
 
 ---
 
@@ -195,12 +303,10 @@ NoEyes/
 ├── install.ps1        Bootstrap for Windows PowerShell
 ├── install.bat        Bootstrap for Windows CMD
 │
-├── demo2.py                Security features demo (tmux + asciinema)
-├── demo_install_sh.py      Installation demo — sh install.sh path
-├── demo_install_setup.py   Installation demo — python setup.py path
+├── selftest.py        29-test automated test suite
+├── demo2.py           Security features demo (tmux + asciinema)
 │
 ├── requirements.txt   pip dependencies (just: cryptography)
-├── .gitignore
 ├── CHANGELOG.md
 └── README.md
 ```
@@ -225,9 +331,6 @@ NoEyes/
 
 ---
 
-
----
-
 ## Running a Server Online — bore pub
 
 ### The problem: port forwarding is often blocked
@@ -245,8 +348,6 @@ bore pub solves this by creating a **secure tunnel** from your machine to a publ
 ### What is bore?
 
 **bore** is an open-source TCP tunnel tool written in Rust by [**Eric Zhang** (@ekzhang)](https://github.com/ekzhang/bore).
-
-> _"A simple CLI tool for making tunnels to localhost"_
 
 When you run the NoEyes server, it automatically tries to start:
 
@@ -266,96 +367,47 @@ You share that address with your friends — they connect with:
 python noeyes.py --connect bore.pub --port 12345 --key-file ./chat.key
 ```
 
-**Everything is still end-to-end encrypted.** bore only forwards raw bytes — it is as blind as the NoEyes server itself. The relay operator cannot read your messages.
+**Everything is still end-to-end encrypted.** bore only forwards raw bytes — it cannot read your messages.
 
-**Credit:** bore is created and maintained by Eric Zhang. Source code and documentation: https://github.com/ekzhang/bore
+**Credit:** bore is created and maintained by Eric Zhang. Source: https://github.com/ekzhang/bore
 
 ---
 
 ### bore pub limitations
 
-bore.pub is a **free public relay** maintained by the bore project. It is generous and available to anyone, but it has real limits you should understand:
-
 | Limitation | Details |
 |---|---|
-| **No uptime guarantee** | bore.pub is a volunteer service — it can go down, move, or change at any time |
-| **Shared bandwidth** | Heavy traffic (large file transfers, many concurrent users) can affect other bore users |
-| **Not for production** | If you are running NoEyes for a team or community, you should not depend on bore.pub long-term |
-| **Port is random** | Each server start gets a different port — you must reshare the address |
-| **No authentication** | Anyone who knows your bore.pub address can attempt to connect to your NoEyes server (your NoEyes key file still protects all content) |
-
----
-
-### Why NoEyes is perfect for bore pub
-
-Most apps would overwhelm a free relay. NoEyes is different:
-
-- **Tiny bandwidth footprint** — messages are short. Even with 10 active users, NoEyes sends only a few KB per minute of idle chat
-- **Minimal CPU** — the server is a pure async forwarder. It does zero cryptography. On a Raspberry Pi it barely registers
-- **Low RAM** — the server holds only routing state, not message history. A 10-user session uses under 5 MB
-- **File transfers are streamed** — large files are chunked and pipelined, not buffered in memory on the server
-- **Idle = zero traffic** — when nobody is typing, nothing is sent
-
-A single bore.pub tunnel can handle a small NoEyes group indefinitely without putting meaningful load on the relay. **This is the use case bore.pub was designed for.**
+| **No uptime guarantee** | bore.pub is a volunteer service — it can go down at any time |
+| **Shared bandwidth** | Heavy traffic can affect other bore users |
+| **Not for production** | For a team or community, host your own server |
+| **Port is random** | Each server start gets a different port — reshare the address |
+| **No authentication** | Anyone who knows your bore.pub address can attempt to connect (your key file still protects all content) |
 
 ---
 
 ### When to use a VPS instead
 
-If you are planning to use NoEyes with a larger group, run it persistently 24/7, or want a stable address, consider a **Virtual Private Server (VPS)**:
+| Situation | Recommendation |
+|---|---|
+| More than ~10 concurrent users | VPS |
+| Server always online 24/7 | VPS |
+| Stable hostname | VPS |
+| Short session / demo | bore.pub is fine |
 
-**When to get a VPS:**
-- More than ~10 concurrent users
-- You want the server always online (not just when your laptop is open)
-- You want a stable hostname (not a random bore.pub port)
-- You want to run your own bore relay (so you are not depending on bore.pub at all)
-
-**Cheap VPS options** (as of 2025, prices change):
-- **Hetzner** — from €4/month, excellent for Europe
-- **DigitalOcean** — from $4/month, easy UI
-- **Vultr** — from $2.50/month
-- **Oracle Cloud** — always-free tier (2 VMs, 1 GB RAM each)
-- **Fly.io** — free hobby tier
-
-**Running NoEyes on a VPS:**
+**Cheap VPS options:** Hetzner (€4/mo), DigitalOcean ($4/mo), Vultr ($2.50/mo), Oracle Cloud (free tier)
 
 ```bash
-# On the VPS (no bore needed — it has a real public IP)
-git clone https://github.com/yourusername/NoEyes
-cd NoEyes
-python setup.py
+# On the VPS — no bore needed, it has a real public IP
 python noeyes.py --server --port 5000 --no-bore
-
-# Keep it running with screen or tmux
-screen -S noeyes
-python noeyes.py --server --port 5000 --no-bore
-# Ctrl+A, D to detach
 ```
-
-**Running your own bore relay on a VPS:**
-
-```bash
-# Install bore server on the VPS
-cargo install bore-cli
-bore server --min-port 10000 --max-port 30000
-
-# Then on your home machine, point to your VPS instead of bore.pub
-bore local 5000 --to your-vps-ip
-```
-
-This gives you full control — no dependency on any third-party relay.
 
 ---
 
-### Disabling bore (LAN / VPS / custom tunnel)
-
-If you are on a LAN, have a static IP, or use your own tunnel, start the server with:
+### Disabling bore
 
 ```bash
 python noeyes.py --server --port 5000 --no-bore
 ```
-
-The `--no-bore` flag skips the tunnel entirely and prints your local IP for LAN connections.
 
 ---
 
@@ -365,8 +417,6 @@ The `--no-bore` flag skips the tunnel entirely and prints your local IP for LAN 
 python update.py           # update to latest version
 python update.py --check   # just check — don't change anything
 ```
-
-After updating, run `python setup.py --check` to make sure all dependencies are still satisfied.
 
 ---
 
@@ -388,7 +438,7 @@ cat ~/.noeyes/tofu_pubkeys.json
 
 ## Tech Stack
 
-- **Language:** Python 3.8+
+- **Language:** Python 3.9+
 - **Encryption:** `cryptography` library — Fernet, X25519, Ed25519, AES-256-GCM, HKDF, PBKDF2
 - **Networking:** Raw TCP sockets with a custom length-prefixed framing protocol
 - **Concurrency:** `threading` (recv + input threads per client), `asyncio` on the server
