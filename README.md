@@ -2,7 +2,27 @@
 
 > **End-to-end encrypted group chat, private messages, and file transfer — right in your terminal. The server is a blind forwarder: it cannot read a single byte of your messages, even if fully compromised.**
 
+## See it in action
+
+**Security features demo** — group chat, private messages, identity verification, TOFU key trust:
+
 [![asciicast](https://asciinema.org/a/Rj1YaEgQjEkeEgPG.svg)](https://asciinema.org/a/Rj1YaEgQjEkeEgPG)
+
+---
+
+**Install demo 1 — `sh install.sh`** (no Python required):
+
+[![asciicast](https://asciinema.org/a/WFlG0y6hcn2X4rB6.svg)](https://asciinema.org/a/WFlG0y6hcn2X4rB6)
+
+---
+
+**Install demo 2 — `python setup.py`** (guided wizard):
+
+[![asciicast](https://asciinema.org/a/bNH0MCFecbfwbhVa.svg)](https://asciinema.org/a/bNH0MCFecbfwbhVa)
+
+> *Replace `INSTALL_SH_CAST_ID` and `INSTALL_SETUP_CAST_ID` with the IDs from `asciinema upload` after recording.*
+
+---
 
 ---
 
@@ -177,7 +197,9 @@ NoEyes/
 ├── install.ps1        Bootstrap for Windows PowerShell
 ├── install.bat        Bootstrap for Windows CMD
 │
-├── demo2.py           Security features demo (tmux + asciinema)
+├── demo2.py                Security features demo (tmux + asciinema)
+├── demo_install_sh.py      Installation demo — sh install.sh path
+├── demo_install_setup.py   Installation demo — python setup.py path
 │
 ├── requirements.txt   pip dependencies (just: cryptography)
 ├── .gitignore
