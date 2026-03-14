@@ -12,19 +12,19 @@
 
 ### install.sh — Bootstrap installer
 
-
+https://github.com/user-attachments/assets/44a36a30-7057-4db7-a0c3-ee6378232640
 
 ---
 
 ### install.py — Universal Python installer
 
-
+https://github.com/user-attachments/assets/20920b01-8468-444b-a632-736af2151f8e
 
 ---
 
 ### Server — Guided launcher startup
 
-
+https://github.com/user-attachments/assets/00c528a0-68af-4c30-af94-c6b725cbae39
 
 ---
 
