@@ -6,7 +6,7 @@
 
 ### Full Showcase — 3 clients, rooms, private messages, sidebar panel
 
-
+https://github.com/user-attachments/assets/09030d58-491a-46f9-bcfe-e74955b73b70
 
 ---
 
