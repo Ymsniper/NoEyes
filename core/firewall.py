@@ -1,14 +1,14 @@
 """
-core/firewall.py — NoEyes cross-platform firewall manager
+core/firewall.py - NoEyes cross-platform firewall manager
 ==========================================================
 Handles opening / closing firewall rules around the server port so users
 never have to touch firewall settings manually.
 
 Supported platforms
 -------------------
-  Windows  — netsh advfirewall (no UAC needed for per-exe allow rules)
-  Linux    — ufw, firewalld, or iptables (needs sudo; gracefully skips if absent)
-  macOS    — pfctl / Application Firewall (best-effort; usually not needed)
+  Windows  - netsh advfirewall (no UAC needed for per-exe allow rules)
+  Linux    - ufw, firewalld, or iptables (needs sudo; gracefully skips if absent)
+  macOS    - pfctl / Application Firewall (best-effort; usually not needed)
 
 Lifecycle
 ---------
@@ -32,9 +32,9 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-# ---------------------------------------------------------------------------
+# ---
 # State file
-# ---------------------------------------------------------------------------
+# ---
 
 _STATE_FILE = Path.home() / ".noeyes" / "open_ports.json"
 
@@ -52,7 +52,7 @@ def _save_state(state: dict) -> None:
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         # Write to a temp file then rename so the update is atomic.
-        # Always open with mode 0600 — the file records which ports are open;
+        # Always open with mode 0600 - the file records which ports are open;
         # a world-readable state file would let local users tamper with it.
         tmp = _STATE_FILE.with_suffix(".tmp")
         import stat as _stat
@@ -78,9 +78,9 @@ def _record_closed(port: int) -> None:
     _save_state(s)
 
 
-# ---------------------------------------------------------------------------
+# ---
 # Windows helpers
-# ---------------------------------------------------------------------------
+# ---
 
 def _win_rule_exists(rule_name: str) -> bool:
     r = subprocess.run(
@@ -118,9 +118,9 @@ def _win_close(port: int) -> bool:
     return r.returncode == 0
 
 
-# ---------------------------------------------------------------------------
+# ---
 # Linux helpers
-# ---------------------------------------------------------------------------
+# ---
 
 def _linux_tool() -> Optional[str]:
     for t in ("ufw", "firewall-cmd", "iptables"):
@@ -145,9 +145,9 @@ def _sudo_run(cmd: list) -> bool:
     r = subprocess.run(["sudo", "-n"] + cmd, capture_output=True, text=True)
     if r.returncode == 0:
         return True
-    # Fall back to interactive sudo — warn the user so they know what's asking.
+    # Fall back to interactive sudo - warn the user so they know what's asking.
     print(
-        "  [fw] Firewall rule requires sudo — you may be prompted for your password.\n"
+        "  [fw] Firewall rule requires sudo - you may be prompted for your password.\n"
         "       (NoEyes is trying to run: sudo " + " ".join(cmd) + ")",
         flush=True,
     )
@@ -195,9 +195,9 @@ def _linux_close(port: int) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
+# ---
 # Public API
-# ---------------------------------------------------------------------------
+# ---
 
 def open_port(port: int) -> None:
     """
@@ -210,13 +210,13 @@ def open_port(port: int) -> None:
             ok = _win_open(port)
         elif sys.platform.startswith("linux"):
             ok = _linux_open(port)
-        # macOS / other: skip silently — macOS rarely blocks localhost
+        # macOS / other: skip silently - macOS rarely blocks localhost
 
         if ok:
             _record_open(port)
             print(f"  [fw] Firewall rule opened for port {port}")
         else:
-            # Non-fatal — bore tunnel and LAN still work without it
+            # Non-fatal - bore tunnel and LAN still work without it
             print(f"  [fw] Could not open firewall rule for port {port} "
                   f"(try running as admin / sudo if needed)")
     except Exception as e:
@@ -251,9 +251,9 @@ def check_stale() -> None:
     Called at startup.  Reads the state file and for each port that was
     recorded as open (meaning the server crashed or was force-killed before
     it could clean up), asks the user what to do:
-      a — close all
-      s — close selected (comma-separated numbers)
-      n — leave them open
+      a - close all
+      s - close selected (comma-separated numbers)
+      n - leave them open
     """
     try:
         s = _load_state()
@@ -285,6 +285,6 @@ def check_stale() -> None:
                 if part.isdigit() and 1 <= int(part) <= len(stale):
                     close_port(stale[int(part) - 1])
         else:
-            print("  [fw] Skipped — ports remain open. You will be asked again next run.")
+            print("  [fw] Skipped - ports remain open. You will be asked again next run.")
     except Exception as e:
         print(f"  [fw] Stale check skipped: {e}")

@@ -1,1 +1,2 @@
-cryptography
+-e cryptography
+PyNaCl

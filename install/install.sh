@@ -168,6 +168,19 @@ else
     ok "Python installed: $PYTHON"
 fi
 
+# ── Termux: pre-install native deps needed by Python packages ────────────────
+# Must happen before install.py so pip can link against system libraries
+# instead of compiling from source (which takes 20+ minutes).
+
+if [ $IS_TERMUX -eq 1 ]; then
+    log "Termux detected — pre-installing native build deps..."
+    pkg install -y clang make libtool pkg-config \
+        libffi openssl libsodium 2>/dev/null || true
+    ok "Native deps ready"
+    export SODIUM_INSTALL=system
+    export CRYPTOGRAPHY_DONT_BUILD_RUST=1
+fi
+
 # ── hand off to install.py ────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

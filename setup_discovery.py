@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-setup_discovery.py — set up or reset NoEyes bore port discovery.
-
-Provisions a free anonymous app-key from keyvalue.immanuel.co and saves it
-to ~/.noeyes/discovery_appkey.  No email, no account, no auth needed.
-Runs automatically on first server start — use this script only to reset.
-
-Usage:
-    python setup_discovery.py
-"""
+"""setup_discovery.py - set up or reset NoEyes bore port discovery."""
 
 import re
 import sys
@@ -20,7 +11,7 @@ APPKEY_FILE = Path.home() / ".noeyes" / "discovery_appkey"
 
 
 def main():
-    print("\n  NoEyes — Discovery App-Key Setup\n")
+    print("\n  NoEyes - Discovery App-Key Setup\n")
 
     existing = ""
     try:

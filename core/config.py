@@ -1,18 +1,13 @@
 # FILE: config.py
 """
-config.py — Configuration loading for NoEyes.
+config.py - Configuration loading for NoEyes.
 
 Loads (in priority order):
   1. CLI flags
   2. JSON config file (--config PATH or noeyes_config.json in cwd)
   3. Hard-coded defaults
-
-New flags added in this revision:
-  --gen-key          Generate a Fernet key file at --key-file path and exit.
-  --username NAME    Pre-set username (skips interactive prompt).
-
-All existing flags are preserved unchanged.
 """
+from __future__ import annotations
 
 import argparse
 import json
@@ -53,7 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Build and return the argument parser."""
     p = argparse.ArgumentParser(
         prog="noeyes",
-        description="NoEyes — Secure Terminal Chat (E2E Encrypted)",
+        description="NoEyes - Secure Terminal Chat (E2E Encrypted)",
     )
 
     mode = p.add_mutually_exclusive_group()
@@ -62,15 +57,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--gen-key",
         action="store_true",
-        help="Generate a new Fernet key file at --key-file PATH and exit.",
+        help="(Deprecated) Use --generate-access-key or --generate-chat-key instead.",
+    )
+    mode.add_argument(
+        "--generate-access-key",
+        action="store_true",
+        help="Generate a new server.key (access key) and print the access code. "
+             "Run this on the server machine.",
+    )
+    mode.add_argument(
+        "--generate-chat-key",
+        metavar="ACCESS_HEX",
+        help="Generate a chat.key from the server's access code (hex string). "
+             "Save it to --key-file PATH. Run this on a client machine, "
+             "NOT on the server.",
     )
 
     p.add_argument("--port",      type=int,  default=None, metavar="PORT",
                    help=f"TCP port (default {DEFAULT_PORT}).")
     p.add_argument("--key",       default=None, metavar="PASSPHRASE",
-                   help="Shared passphrase (derived to Fernet key).")
+                   help="Shared passphrase (derived to XSalsa20-Poly1305 key).")
     p.add_argument("--key-file",  default=None, metavar="PATH",
-                   help="Path to a Fernet key file.")
+                   help="Path to a key file (v5 format).")
     p.add_argument("--room",      default=None, metavar="ROOM",
                    help=f"Initial room (default: {DEFAULT_ROOM}).")
     p.add_argument("--username",  default=None, metavar="NAME",
@@ -84,32 +92,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # TLS (optional, as before)
     p.add_argument("--no-tls",   action="store_true",
-                       help="Disable TLS (not recommended — exposes metadata).")
+                       help="Disable TLS (not recommended - exposes metadata).")
     p.add_argument("--cert",     default=None, metavar="PATH",
                        help="Override TLS cert path (default: ~/.noeyes/server.crt).")
     p.add_argument("--tls-key",  default=None, metavar="PATH",
-                       help="Override TLS key path (default: ~/.noeyes/server.key).")
+                       help="Override TLS key path (default: ~/.noeyes/tls.key).")
 
     # Server-only
     p.add_argument("--daemon",   action="store_true",
                    help="Run server as background daemon (Unix only).")
 
-    # Bore tunnel — opt-out flag.
+    # Bore tunnel - opt-out flag.
     #
     # WHY run WITH bore (default):
     #   • Your server is behind a residential or mobile ISP (Orange, Djezzy…)
     #     that blocks all inbound TCP connections regardless of port-forwarding.
-    #   • You are on CGNAT — your router has no real public IP.
+    #   • You are on CGNAT - your router has no real public IP.
     #   • You want clients on cellular data to connect without configuring
     #     anything on your router.
     #   • Quick demos or one-off sessions where sharing a public address is
     #     more convenient than telling people your IP.
     #
     # WHY run WITHOUT bore (--no-bore):
-    #   • You are on a LAN and only local clients will connect — bore adds
+    #   • You are on a LAN and only local clients will connect - bore adds
     #     unnecessary latency and a dependency on bore.pub being reachable.
     #   • Your server is already reachable from the Internet via a static IP
-    #     or a properly forwarded port — no tunnel needed.
+    #     or a properly forwarded port - no tunnel needed.
     #   • Air-gapped or offline network where outbound connections are
     #     restricted and bore.pub cannot be reached.
     #   • You have your own tunnel solution (WireGuard, Tailscale, ngrok…).
@@ -164,9 +172,11 @@ def load_config(argv: list[str] | None = None) -> dict[str, Any]:
 
     cfg: dict[str, Any] = {
         # Modes
-        "server":   args.server,
-        "connect":  args.connect,
-        "gen_key":  args.gen_key,
+        "server":              args.server,
+        "connect":             args.connect,
+        "gen_key":             args.gen_key,
+        "generate_access_key": args.generate_access_key,
+        "generate_chat_key":   args.generate_chat_key,
 
         # Network
         "port":     _get("port",     "port",     DEFAULT_PORT),

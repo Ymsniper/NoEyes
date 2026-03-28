@@ -1,6 +1,6 @@
 # FILE: identity.py
 """
-identity.py — TOFU (Trust On First Use) pubkey store for NoEyes.
+identity.py - TOFU (Trust On First Use) pubkey store for NoEyes.
 
 Store location: ~/.noeyes/tofu_pubkeys.json
 Format:
@@ -53,7 +53,7 @@ def trust_or_verify(
 
     - trusted=True, is_new=True  → first time seen; key saved.
     - trusted=True, is_new=False → key matches stored value.
-    - trusted=False, is_new=False → KEY MISMATCH — possible impersonation.
+    - trusted=False, is_new=False → KEY MISMATCH - possible impersonation.
     """
     if username not in store:
         store[username] = vk_hex
@@ -63,7 +63,7 @@ def trust_or_verify(
     if store[username] == vk_hex:
         return True, False
 
-    # Mismatch — do NOT update the store automatically.
+    # Mismatch - do NOT update the store automatically.
     return False, False
 
 
