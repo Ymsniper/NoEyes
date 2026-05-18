@@ -1,5 +1,7 @@
 # NoEyes 🔒 Secure Terminal Chat
 
+[![Featured in OSINTech's OSINT Anatomy](https://img.shields.io/badge/Featured%20in-OSINTech%20OSINT%20Anatomy%20%23157-blue?style=for-the-badge&logo=substack&logoColor=white)](https://osintech.substack.com/p/osintechs-timeline-157-09042026)
+
 > **End-to-end encrypted group chat, private messages, and file transfer in your terminal. The server is a blind forwarder: it cannot read your messages, does not know your username, does not know the room you are in, and cannot link any two messages to the same person, even if fully compromised.**
 
 ## See it in action
